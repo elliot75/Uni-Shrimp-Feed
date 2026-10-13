@@ -190,8 +190,8 @@ def pond_readings(
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT recorded_at, ph, ph_temp_c, salinity_ppt, cond_temp_c,
-                   conductivity_us_cm, tds_mg_l, do_mg_l, do_sat_pct, do_temp_c
+            SELECT recorded_at, ph, ph_mv, ph_temp_c, salinity_ppt, cond_temp_c,
+                   conductivity_us_cm, tds_mg_l, do_mg_l, do_sat_pct, do_temp_c, temp_c
             FROM shrimp.probe_readings
             WHERE pond_id = %s AND recorded_at >= %s
             ORDER BY recorded_at

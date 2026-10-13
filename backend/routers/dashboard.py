@@ -33,7 +33,8 @@ def dashboard(current_user: dict = Depends(get_current_user), conn=Depends(get_d
                    c.stage AS cycle_stage, c.stocked_at,
                    d.serial AS device_serial, d.last_seen_at,
                    r.recorded_at, r.ph, r.salinity_ppt, r.do_mg_l,
-                   COALESCE(r.ph_temp_c, r.cond_temp_c, r.do_temp_c) AS temp_c,
+                   r.temp_c, r.ph_mv, r.ph_temp_c, r.cond_temp_c,
+                   r.conductivity_us_cm, r.tds_mg_l, r.do_sat_pct,
                    (
                      SELECT count(*) FROM shrimp.alert_events ae
                      WHERE ae.pond_id = p.id AND ae.resolved_at IS NULL

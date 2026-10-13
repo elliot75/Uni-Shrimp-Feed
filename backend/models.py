@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import re
 from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 Role = Literal["admin", "salesperson", "farmer"]
 Locale = Literal["vi", "zh-TW"]
@@ -103,10 +104,20 @@ class CycleUpdate(BaseModel):
 
 
 class DeviceCreate(BaseModel):
-    serial: str = Field(min_length=1, max_length=64)
+    serial: str = Field(min_length=12, max_length=12)
     pond_id: Optional[UUID] = None
     name: Optional[str] = None
     notes: Optional[str] = None
+
+    @field_validator("serial", mode="before")
+    @classmethod
+    def normalize_mac(cls, value):
+        if not isinstance(value, str):
+            raise ValueError("Device ID must be a MAC address")
+        mac = value.strip()
+        if not re.fullmatch(r"(?:[0-9a-fA-F]{12}|(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}|(?:[0-9a-fA-F]{2}-){5}[0-9a-fA-F]{2})", mac):
+            raise ValueError("Enter a 12-digit MAC address, optionally separated by colons or hyphens")
+        return mac.replace(":", "").replace("-", "").upper()
 
 
 class DeviceUpdate(BaseModel):

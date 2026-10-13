@@ -79,9 +79,36 @@ CREATE TABLE IF NOT EXISTS shrimp.ponds (
 CREATE UNIQUE INDEX IF NOT EXISTS ponds_code_lower ON shrimp.ponds (lower(code));
 CREATE INDEX IF NOT EXISTS ponds_farmer_id ON shrimp.ponds (farmer_id);
 
+CREATE OR REPLACE FUNCTION shrimp.normalize_device_mac(p_mac text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+STRICT
+PARALLEL SAFE
+AS $$
+    SELECT CASE
+        WHEN btrim(p_mac) ~* '^([0-9a-f]{12}|([0-9a-f]{2}:){5}[0-9a-f]{2}|([0-9a-f]{2}-){5}[0-9a-f]{2})$'
+        THEN upper(replace(replace(btrim(p_mac), ':', ''), '-', ''))
+        ELSE NULL
+    END
+$$;
+
+CREATE OR REPLACE FUNCTION shrimp.prevent_device_mac_change()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF OLD.mac_address IS NOT NULL AND NEW.mac_address IS DISTINCT FROM OLD.mac_address THEN
+        RAISE EXCEPTION 'device MAC address is immutable' USING ERRCODE = '22023';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
 CREATE TABLE IF NOT EXISTS shrimp.devices (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     serial          text NOT NULL,
+    mac_address     text GENERATED ALWAYS AS (shrimp.normalize_device_mac(serial)) STORED,
     pond_id         uuid REFERENCES shrimp.ponds(id),
     name            text,
     is_active       boolean NOT NULL DEFAULT true,
@@ -92,6 +119,10 @@ CREATE TABLE IF NOT EXISTS shrimp.devices (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS devices_serial ON shrimp.devices (serial);
+DROP TRIGGER IF EXISTS devices_mac_immutable ON shrimp.devices;
+CREATE TRIGGER devices_mac_immutable
+    BEFORE UPDATE OF serial ON shrimp.devices
+    FOR EACH ROW EXECUTE FUNCTION shrimp.prevent_device_mac_change();
 
 CREATE TABLE IF NOT EXISTS shrimp.cycles (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -276,9 +307,11 @@ DECLARE
     v_device shrimp.devices%ROWTYPE;
     v_cycle_id uuid;
     v_id bigint;
+    v_mac text;
 BEGIN
-    IF p_device_serial IS NULL OR btrim(p_device_serial) = '' THEN
-        RAISE EXCEPTION 'device serial is required' USING ERRCODE = '22023';
+    v_mac := shrimp.normalize_device_mac(p_device_serial);
+    IF v_mac IS NULL THEN
+        RAISE EXCEPTION 'device ID must be a MAC address (12 hex digits)' USING ERRCODE = '22023';
     END IF;
     IF p_recorded_at IS NULL THEN
         RAISE EXCEPTION 'recorded_at is required' USING ERRCODE = '22023';
@@ -286,7 +319,7 @@ BEGIN
 
     SELECT * INTO v_device
     FROM shrimp.devices
-    WHERE serial = p_device_serial AND is_active = true;
+    WHERE mac_address = v_mac AND is_active = true;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'unknown or inactive device serial: %', p_device_serial USING ERRCODE = '22023';
@@ -306,18 +339,18 @@ BEGIN
         conductivity_us_cm, salinity_ppt, cond_temp_c, tds_mg_l,
         do_mg_l, do_sat_pct, do_temp_c, raw
     ) VALUES (
-        p_device_serial, v_device.id, v_device.pond_id, v_cycle_id, p_recorded_at,
+        v_mac, v_device.id, v_device.pond_id, v_cycle_id, p_recorded_at,
         p_ph, p_ph_mv, p_ph_temp_c,
         p_conductivity_us_cm, p_salinity_ppt, p_cond_temp_c, p_tds_mg_l,
         p_do_mg_l, p_do_sat_pct, p_do_temp_c, p_raw
     )
-    ON CONFLICT (device_serial, recorded_at) DO NOTHING
+    ON CONFLICT (device_id, recorded_at) WHERE device_id IS NOT NULL DO NOTHING
     RETURNING id INTO v_id;
 
     IF v_id IS NULL THEN
         SELECT id INTO v_id
         FROM shrimp.probe_readings
-        WHERE device_serial = p_device_serial AND recorded_at = p_recorded_at;
+        WHERE device_id = v_device.id AND recorded_at = p_recorded_at;
     END IF;
 
     UPDATE shrimp.devices

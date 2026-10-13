@@ -21,7 +21,7 @@ DEVICE_PASSWORD = os.getenv("SHRIMP_DEVICE_PASSWORD", "")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
-SQL_PATH = ROOT / "backend" / "sql" / "001_init.sql"
+SQL_DIR = ROOT / "backend" / "sql"
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -52,8 +52,9 @@ def main() -> None:
     conn = psycopg2.connect(ADMIN_DB_URL, dbname=APP_DB)
     conn.autocommit = True
     cur = conn.cursor()
-    schema_sql = SQL_PATH.read_text(encoding="utf-8")
-    cur.execute(schema_sql)
+    for sql_path in sorted(SQL_DIR.glob("*.sql")):
+        cur.execute(sql_path.read_text(encoding="utf-8"))
+        print(f"applied {sql_path.name}")
     cur.execute("ALTER ROLE shrimp_device PASSWORD %s", (DEVICE_PASSWORD,))
     print("schema applied; shrimp_device password set")
 

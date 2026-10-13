@@ -16,7 +16,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 DEVICE_URL = os.getenv("SHRIMP_DEVICE_URL")
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-SERIAL = "__test_esp32_01"
+SERIAL = "840D8E235164"
 FARMER_USER = "__test_farmer"
 POND_CODE = "__TEST-P1"
 

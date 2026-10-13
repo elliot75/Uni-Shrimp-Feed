@@ -17,7 +17,7 @@ from db import get_connection  # noqa: E402
 
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 PREFIX = "__test_lab_"
-SERIAL = PREFIX + "esp"
+SERIAL = "840D8E235165"
 
 
 def _cleanup(conn):

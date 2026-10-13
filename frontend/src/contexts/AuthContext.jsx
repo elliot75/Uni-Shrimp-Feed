@@ -39,8 +39,12 @@ export function AuthProvider({ children }) {
         return next;
     };
 
+    const changePassword = async (current_password, new_password) => {
+        await api.post('/auth/me/password', { current_password, new_password });
+    };
+
     return (
-        <AuthContext.Provider value={{ user, login, logout, refreshMe, updateMe, setUser }}>
+        <AuthContext.Provider value={{ user, login, logout, refreshMe, updateMe, changePassword, setUser }}>
             {children}
         </AuthContext.Provider>
     );

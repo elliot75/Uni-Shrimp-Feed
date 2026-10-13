@@ -1,7 +1,7 @@
 export default function Spark({ points, color = '#14b8a6' }) {
     const vals = points.filter((p) => p != null && !Number.isNaN(Number(p))).map(Number);
     if (vals.length < 2) {
-        return <div className="h-24 text-slate-500 text-xs flex items-center">{vals.length ? vals[0] : '—'}</div>;
+        return <div className="h-24 muted text-xs flex items-center">{vals.length ? vals[0] : '—'}</div>;
     }
     const min = Math.min(...vals);
     const max = Math.max(...vals);

@@ -64,72 +64,77 @@ export default function PondDetail() {
     return (
         <div className="space-y-6">
             <div>
-                <h1 className="text-2xl font-semibold">{pond.code} · {pond.name}</h1>
-                <p className="text-slate-400 text-sm">{pond.farmer_name} · {tr(pond.pond_type)}</p>
+                <h1 className="text-2xl font-semibold break-words">{pond.code} · {pond.name}</h1>
+                <p className="muted text-sm">{pond.farmer_name} · {tr(pond.pond_type)}</p>
             </div>
 
             {pond.open_alerts?.length > 0 && (
-                <div className="bg-rose-950/40 border border-rose-800 rounded-xl p-4 space-y-1">
+                <div className="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 rounded-xl p-4 space-y-1">
                     {pond.open_alerts.map((a) => (
-                        <div key={a.id} className="text-sm">{a[msg]}</div>
+                        <div key={a.id} className="text-sm break-words">{a[msg]}</div>
                     ))}
                 </div>
             )}
 
-            <section className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+            <section className="card p-4">
                 <h2 className="font-medium mb-2">{tr('cycle')}</h2>
                 {pond.cycle ? (
-                    <div className="text-sm text-slate-300">
+                    <div className="text-sm text-slate-600 dark:text-slate-300">
                         {tr(pond.cycle.stage)} · DOC {pond.cycle.doc ?? '—'} · {pond.cycle.stocked_at || ''}
                     </div>
-                ) : <div className="text-slate-500 text-sm mb-2">{tr('noData')}</div>}
-                <form onSubmit={submitCycle} className="flex flex-wrap gap-2 mt-3 text-sm">
-                    <select className="bg-slate-800 rounded px-2 py-1" value={cycleForm.stage} onChange={(e) => setCycleForm({ ...cycleForm, stage: e.target.value })}>
+                ) : <div className="muted text-sm mb-2">{tr('noData')}</div>}
+                <form onSubmit={submitCycle} className="flex flex-col sm:flex-row flex-wrap gap-2 mt-3 text-sm">
+                    <select className="field" value={cycleForm.stage} onChange={(e) => setCycleForm({ ...cycleForm, stage: e.target.value })}>
                         <option value="nursery">{tr('nursery')}</option>
                         <option value="growout">{tr('growout')}</option>
                     </select>
-                    <input type="date" className="bg-slate-800 rounded px-2 py-1" value={cycleForm.stocked_at} onChange={(e) => setCycleForm({ ...cycleForm, stocked_at: e.target.value })} />
-                    <input placeholder={tr('stockedCount')} className="bg-slate-800 rounded px-2 py-1 w-28" value={cycleForm.stocked_count} onChange={(e) => setCycleForm({ ...cycleForm, stocked_count: e.target.value })} />
-                    <button className="bg-teal-700 rounded px-3 py-1">{tr('newCycle')}</button>
+                    <input type="date" className="field" value={cycleForm.stocked_at} onChange={(e) => setCycleForm({ ...cycleForm, stocked_at: e.target.value })} />
+                    <input placeholder={tr('stockedCount')} className="field sm:w-28" value={cycleForm.stocked_count} onChange={(e) => setCycleForm({ ...cycleForm, stocked_count: e.target.value })} />
+                    <button className="btn min-h-11">{tr('newCycle')}</button>
                 </form>
             </section>
 
-            <section className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                <div className="flex justify-between items-center mb-2">
+            <section className="card p-4">
+                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-2">
                     <h2 className="font-medium">{tr('readings')}</h2>
-                    <div className="flex gap-1 text-xs">
+                    <div className="flex flex-wrap gap-1 text-xs">
                         {['24h', '7d', '30d'].map((r) => (
-                            <button key={r} onClick={() => setRange(r)} className={`px-2 py-1 rounded ${range === r ? 'bg-teal-700' : 'bg-slate-800'}`}>
+                            <button
+                                type="button"
+                                key={r}
+                                onClick={() => setRange(r)}
+                                className={`px-3 py-2 rounded min-h-11 ${range === r ? 'bg-teal-700 text-white' : 'bg-slate-100 dark:bg-slate-800'}`}
+                            >
                                 {tr(r === '24h' ? 'range24h' : r === '7d' ? 'range7d' : 'range30d')}
                             </button>
                         ))}
                     </div>
                 </div>
-                <div className="grid md:grid-cols-2 gap-4">
-                    <div><div className="text-xs text-slate-400">{tr('ph')}</div><Spark points={readings.map((x) => x.ph)} color="#f43f5e" /></div>
-                    <div><div className="text-xs text-slate-400">{tr('salinity')}</div><Spark points={readings.map((x) => x.salinity_ppt)} /></div>
-                    <div><div className="text-xs text-slate-400">{tr('do')}</div><Spark points={readings.map((x) => x.do_mg_l)} color="#38bdf8" /></div>
-                    <div><div className="text-xs text-slate-400">{tr('temp')}</div><Spark points={readings.map((x) => x.ph_temp_c || x.cond_temp_c)} color="#fbbf24" /></div>
+                <div className="grid sm:grid-cols-2 gap-4">
+                    <div><div className="text-xs muted">{tr('ph')}</div><Spark points={readings.map((x) => x.ph)} color="#f43f5e" /></div>
+                    <div><div className="text-xs muted">{tr('salinity')}</div><Spark points={readings.map((x) => x.salinity_ppt)} /></div>
+                    <div><div className="text-xs muted">{tr('do')}</div><Spark points={readings.map((x) => x.do_mg_l)} color="#38bdf8" /></div>
+                    <div><div className="text-xs muted">{tr('temp')}</div><Spark points={readings.map((x) => x.ph_temp_c || x.cond_temp_c)} color="#fbbf24" /></div>
                 </div>
             </section>
 
-            <section className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                <div className="flex justify-between mb-3">
+            <section className="card p-4">
+                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-3">
                     <h2 className="font-medium">{tr('lab')}</h2>
-                    <button onClick={() => setShowLab(!showLab)} className="text-sm bg-teal-700 rounded px-3 py-1">{tr('addLab')}</button>
+                    <button type="button" onClick={() => setShowLab(!showLab)} className="btn text-sm min-h-11">{tr('addLab')}</button>
                 </div>
                 {showLab && (
-                    <form onSubmit={submitLab} className="grid md:grid-cols-4 gap-2 mb-4 text-sm">
-                        <input required type="datetime-local" className="bg-slate-800 rounded px-2 py-1" value={labForm.sampled_at} onChange={(e) => setLabForm({ ...labForm, sampled_at: e.target.value })} />
+                    <form onSubmit={submitLab} className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-4 text-sm">
+                        <input required type="datetime-local" className="field" value={labForm.sampled_at} onChange={(e) => setLabForm({ ...labForm, sampled_at: e.target.value })} />
                         {[['no2_ppm', 'no2'], ['nh3_ppm', 'nh3'], ['alkalinity_ppm', 'alk'], ['ca_ppm', 'ca'], ['mg_ppm', 'mg'], ['k_ppm', 'k']].map(([k, label]) => (
-                            <input key={k} placeholder={tr(label)} className="bg-slate-800 rounded px-2 py-1" value={labForm[k] || ''} onChange={(e) => setLabForm({ ...labForm, [k]: e.target.value })} />
+                            <input key={k} placeholder={tr(label)} className="field" value={labForm[k] || ''} onChange={(e) => setLabForm({ ...labForm, [k]: e.target.value })} />
                         ))}
-                        <button className="bg-teal-600 rounded px-3 py-1">{tr('save')}</button>
+                        <button className="btn min-h-11">{tr('save')}</button>
                     </form>
                 )}
-                <div className="overflow-auto">
-                    <table className="w-full text-sm">
-                        <thead className="text-slate-400 text-left">
+                <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+                    <table className="w-full min-w-[36rem] text-sm">
+                        <thead className="muted text-left">
                             <tr>
                                 <th className="py-1">{tr('sampledAt')}</th>
                                 <th>NO₂</th><th>NH₃</th><th>{tr('alk')}</th><th>Ca</th><th>Mg</th>
@@ -137,8 +142,8 @@ export default function PondDetail() {
                         </thead>
                         <tbody>
                             {labs.map((row) => (
-                                <tr key={row.id} className="border-t border-slate-800">
-                                    <td className="py-1">{new Date(row.sampled_at).toLocaleString(user?.locale || 'vi')}</td>
+                                <tr key={row.id} className="border-t border-slate-200 dark:border-slate-800">
+                                    <td className="py-1 whitespace-nowrap">{new Date(row.sampled_at).toLocaleString(user?.locale || 'vi')}</td>
                                     <td>{row.no2_ppm ?? '—'}</td>
                                     <td>{row.nh3_ppm ?? '—'}</td>
                                     <td>{row.alkalinity_ppm ?? '—'}</td>
@@ -148,7 +153,7 @@ export default function PondDetail() {
                             ))}
                         </tbody>
                     </table>
-                    {labs.length === 0 && <p className="text-slate-500 text-sm mt-2">{tr('noData')}</p>}
+                    {labs.length === 0 && <p className="muted text-sm mt-2">{tr('noData')}</p>}
                 </div>
             </section>
         </div>

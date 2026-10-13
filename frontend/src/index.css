@@ -1,5 +1,7 @@
 @import 'tailwindcss';
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-primary-400: #2dd4bf;
   --color-primary-500: #14b8a6;
@@ -16,11 +18,55 @@
   --font-sans: 'Be Vietnam Pro', 'Noto Sans TC', system-ui, sans-serif;
 }
 
+:root {
+  color-scheme: light;
+  --page-bg: #f8fafc;
+  --page-fg: #0f172a;
+}
+
+html.dark {
+  color-scheme: dark;
+  --page-bg: #020617;
+  --page-fg: #e2e8f0;
+}
+
 * { box-sizing: border-box; }
+
+html, body, #root {
+  min-height: 100%;
+}
+
 body {
   margin: 0;
   font-family: var(--font-sans);
-  background: #0f172a;
-  color: #e2e8f0;
+  background: var(--page-bg);
+  color: var(--page-fg);
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+.card {
+  @apply bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl;
+}
+
+.field {
+  @apply bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 rounded px-3 py-2 outline-none focus:border-teal-600;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center bg-teal-700 hover:bg-teal-600 text-white rounded px-4 py-2 font-medium disabled:opacity-50;
+}
+
+.btn-ghost {
+  @apply inline-flex items-center justify-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded px-3 py-2;
+}
+
+.muted {
+  @apply text-slate-500 dark:text-slate-400;
+}
+
+@media (max-width: 767px) {
+  input, select, textarea {
+    font-size: 16px;
+  }
 }

@@ -13,7 +13,7 @@ from auth import (
     verify_password,
 )
 from db import get_db
-from models import LoginRequest, MeUpdate
+from models import LoginRequest, MeUpdate, PasswordChange
 from telegram_service import bind_link, bot_configured
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -76,6 +76,32 @@ def update_me(body: MeUpdate, current_user: dict = Depends(get_current_user), co
         row = cur.fetchone()
     conn.commit()
     return _public_user(row)
+
+
+@router.post("/me/password")
+def change_password(
+    body: PasswordChange,
+    current_user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+):
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT password_hash FROM shrimp.users WHERE id = %s", (current_user["id"],))
+        row = cur.fetchone()
+    if not row or not verify_password(body.current_password, row["password_hash"]):
+        raise HTTPException(status_code=400, detail="current_password_incorrect")
+    if body.new_password == body.current_password:
+        raise HTTPException(status_code=400, detail="password_unchanged")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE shrimp.users
+            SET password_hash = %s, updated_at = now()
+            WHERE id = %s
+            """,
+            (hash_password(body.new_password), current_user["id"]),
+        )
+    conn.commit()
+    return {"ok": True}
 
 
 @router.post("/telegram/bind")

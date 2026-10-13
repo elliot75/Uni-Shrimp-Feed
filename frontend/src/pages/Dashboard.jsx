@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import api from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { t } from '../i18n';
+import ProbeSummary from '../components/ProbeSummary';
 
 function badge(severity) {
     if (severity === 'critical') return 'bg-rose-600 text-white';
@@ -45,11 +46,8 @@ export default function Dashboard() {
                                 <span className={`text-xs px-2 py-1 rounded shrink-0 ${badge(p.worst_severity)}`}>{p.open_alerts}</span>
                             )}
                         </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-4 text-sm">
-                            <div><div className="muted text-xs">{tr('ph')}</div>{p.ph ?? '—'}</div>
-                            <div><div className="muted text-xs">{tr('salinity')}</div>{p.salinity_ppt ?? '—'}</div>
-                            <div><div className="muted text-xs">{tr('do')}</div>{p.do_mg_l ?? '—'}</div>
-                            <div><div className="muted text-xs">{tr('temp')}</div>{p.temp_c ?? '—'}</div>
+                        <div className="mt-4">
+                            <ProbeSummary reading={p} tr={tr} />
                         </div>
                     </Link>
                 ))}

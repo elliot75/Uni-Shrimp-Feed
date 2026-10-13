@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS shrimp.probe_readings (
     do_mg_l             numeric(8,3),
     do_sat_pct          numeric(8,3),
     do_temp_c           numeric(6,2),
+    temp_c              numeric(6,2) GENERATED ALWAYS AS (do_temp_c) STORED,
     raw                 jsonb,
     ingested_at         timestamptz NOT NULL DEFAULT now(),
     alerts_evaluated_at timestamptz

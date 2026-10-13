@@ -20,7 +20,7 @@ else:
 from alerts import evaluate_stale_devices, process_pending_readings
 from db import get_connection
 from routers import alerts as alerts_routes
-from routers import auth_routes, dashboard, devices, ponds, users
+from routers import auth_routes, dashboard, devices, ponds, probe_readings, users
 from telegram_service import get_updates
 
 _tg_offset = None
@@ -120,6 +120,7 @@ app.include_router(ponds.router)
 app.include_router(devices.router)
 app.include_router(alerts_routes.router)
 app.include_router(dashboard.router)
+app.include_router(probe_readings.router)
 
 
 @app.get("/api/health")

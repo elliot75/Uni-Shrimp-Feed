@@ -6,7 +6,7 @@ import re
 from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, EmailStr, Field, FiniteFloat, field_validator
 
 Role = Literal["admin", "salesperson", "farmer"]
 Locale = Literal["vi", "zh-TW"]
@@ -131,6 +131,60 @@ class DeviceUpdate(BaseModel):
     notes: Optional[str] = None
     is_active: Optional[bool] = None
     unbind: bool = False
+
+
+class ProbeReadingCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    device_serial: str = Field(min_length=12, max_length=12)
+    recorded_at: AwareDatetime
+    ph: Optional[FiniteFloat] = Field(default=None, ge=0, le=14)
+    ph_mv: Optional[FiniteFloat] = None
+    ph_temp_c: Optional[FiniteFloat] = None
+    conductivity_us_cm: Optional[FiniteFloat] = Field(default=None, ge=0)
+    salinity_ppt: Optional[FiniteFloat] = Field(default=None, ge=0)
+    cond_temp_c: Optional[FiniteFloat] = None
+    tds_mg_l: Optional[FiniteFloat] = Field(default=None, ge=0)
+    do_mg_l: Optional[FiniteFloat] = Field(default=None, ge=0)
+    do_sat_pct: Optional[FiniteFloat] = Field(default=None, ge=0)
+    do_temp_c: Optional[FiniteFloat] = None
+    raw: Optional[dict] = None
+
+    @field_validator("device_serial", mode="before")
+    @classmethod
+    def normalize_mac(cls, value):
+        return DeviceCreate.normalize_mac(value)
+
+
+class ProbeReadingReceipt(BaseModel):
+    id: int
+    device_serial: str
+    recorded_at: datetime
+    temp_c: Optional[float]
+
+
+class DeviceActivationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    device_serial: str = Field(min_length=12, max_length=12)
+    activation_code: str = Field(min_length=32, max_length=128)
+
+    @field_validator("device_serial", mode="before")
+    @classmethod
+    def normalize_mac(cls, value):
+        return DeviceCreate.normalize_mac(value)
+
+
+class DeviceActivationCode(BaseModel):
+    device_id: UUID
+    device_serial: str
+    activation_code: str
+    expires_at: datetime
+
+
+class DeviceKeyResponse(BaseModel):
+    device_id: UUID
+    device_serial: str
+    api_key: str
 
 
 class LabTestCreate(BaseModel):

@@ -16,7 +16,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 DEVICE_URL = os.getenv("SHRIMP_DEVICE_URL")
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-SERIAL = "840D8E235164"
+# Keep integration fixtures away from real devices registered in the shared database.
+SERIAL = "A1B2C3D4E5F6"
 FARMER_USER = "__test_farmer"
 POND_CODE = "__TEST-P1"
 

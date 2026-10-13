@@ -4,6 +4,7 @@ import api from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { t } from '../i18n';
 import Spark from '../components/Spark';
+import ProbeSummary, { PROBE_METRICS } from '../components/ProbeSummary';
 
 export default function PondDetail() {
     const { id } = useParams();
@@ -110,11 +111,28 @@ export default function PondDetail() {
                         ))}
                     </div>
                 </div>
+                <div className="mb-4">
+                    <h3 className="text-sm font-medium mb-2">{tr('latest')}</h3>
+                    <ProbeSummary reading={pond.latest_reading} tr={tr} />
+                    {pond.latest_reading?.recorded_at && (
+                        <p className="text-xs muted mt-2">{new Date(pond.latest_reading.recorded_at).toLocaleString(user?.locale || 'vi')}</p>
+                    )}
+                    {pond.latest_reading && (
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs muted mt-2 break-all">
+                            <span>MAC: {pond.latest_reading.device_serial}</span>
+                            {pond.latest_reading.raw?.ip && <span>IP: {pond.latest_reading.raw.ip}</span>}
+                            {pond.latest_reading.raw?.rssi_dbm != null && <span>RSSI: {pond.latest_reading.raw.rssi_dbm} dBm</span>}
+                            {pond.latest_reading.raw?.hostname && <span>mDNS: {pond.latest_reading.raw.hostname}</span>}
+                        </div>
+                    )}
+                </div>
                 <div className="grid sm:grid-cols-2 gap-4">
-                    <div><div className="text-xs muted">{tr('ph')}</div><Spark points={readings.map((x) => x.ph)} color="#f43f5e" /></div>
-                    <div><div className="text-xs muted">{tr('salinity')}</div><Spark points={readings.map((x) => x.salinity_ppt)} /></div>
-                    <div><div className="text-xs muted">{tr('do')}</div><Spark points={readings.map((x) => x.do_mg_l)} color="#38bdf8" /></div>
-                    <div><div className="text-xs muted">{tr('temp')}</div><Spark points={readings.map((x) => x.ph_temp_c || x.cond_temp_c)} color="#fbbf24" /></div>
+                    {PROBE_METRICS.map(({ field, label, unit, color }) => (
+                        <div key={field}>
+                            <div className="text-xs muted">{tr(label)}{unit && ` (${unit})`}</div>
+                            <Spark points={readings.map((x) => x[field])} color={color} />
+                        </div>
+                    ))}
                 </div>
             </section>
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from datetime import datetime, timedelta, timezone
 
 import psycopg2
 from fastapi import APIRouter, Depends, HTTPException
@@ -15,6 +16,7 @@ from models import ProbeReadingCreate, ProbeReadingReceipt
 router = APIRouter(prefix="/api/probe-readings", tags=["probe-readings"])
 device_key_header = APIKeyHeader(name="X-Device-Key", auto_error=False)
 logger = logging.getLogger(__name__)
+MAX_FUTURE_CLOCK_SKEW = timedelta(minutes=5)
 
 
 def key_hash(key: str) -> str:
@@ -33,6 +35,8 @@ def ingest_reading(
     hashed_key: str = Depends(require_device_key),
     conn=Depends(get_db),
 ):
+    if body.recorded_at > datetime.now(timezone.utc) + MAX_FUTURE_CLOCK_SKEW:
+        raise HTTPException(status_code=422, detail="recorded_at is too far in the future; check the device clock")
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(

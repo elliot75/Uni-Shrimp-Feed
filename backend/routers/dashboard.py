@@ -57,7 +57,8 @@ def dashboard(current_user: dict = Depends(get_current_user), conn=Depends(get_d
             LEFT JOIN LATERAL (
                 SELECT * FROM shrimp.probe_readings pr
                 WHERE pr.pond_id = p.id
-                ORDER BY pr.recorded_at DESC
+                  AND pr.recorded_at <= now() + interval '5 minutes'
+                ORDER BY pr.recorded_at DESC, pr.id DESC
                 LIMIT 1
             ) r ON true
             WHERE p.is_active = true AND {where}

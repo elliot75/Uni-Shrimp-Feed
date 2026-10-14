@@ -1,7 +1,7 @@
 """Pydantic request/response models."""
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 import re
 from typing import Literal, Optional
 from uuid import UUID
@@ -91,7 +91,7 @@ class CycleCreate(BaseModel):
     stocked_at: Optional[date] = None
     stocked_count: Optional[int] = None
     density_per_m2: Optional[float] = None
-    sample_avg_weight_g: Optional[float] = None
+    sample_avg_weight_g: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     species: str = "whiteleg"
     notes: Optional[str] = None
 
@@ -102,7 +102,7 @@ class CycleUpdate(BaseModel):
     stocked_at: Optional[date] = None
     stocked_count: Optional[int] = None
     density_per_m2: Optional[float] = None
-    sample_avg_weight_g: Optional[float] = None
+    sample_avg_weight_g: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     species: Optional[str] = None
     notes: Optional[str] = None
     harvested_at: Optional[date] = None
@@ -188,14 +188,22 @@ class DeviceKeyResponse(BaseModel):
 
 
 class LabTestCreate(BaseModel):
-    sampled_at: datetime
-    no2_ppm: Optional[float] = None
-    nh3_ppm: Optional[float] = None
-    alkalinity_ppm: Optional[float] = None
-    ca_ppm: Optional[float] = None
-    mg_ppm: Optional[float] = None
-    k_ppm: Optional[float] = None
+    sampled_at: AwareDatetime
+    cycle_id: Optional[UUID] = None
+    no2_ppm: Optional[FiniteFloat] = Field(default=None, ge=0)
+    nh3_ppm: Optional[FiniteFloat] = Field(default=None, ge=0)
+    alkalinity_ppm: Optional[FiniteFloat] = Field(default=None, ge=0)
+    ca_ppm: Optional[FiniteFloat] = Field(default=None, ge=0)
+    mg_ppm: Optional[FiniteFloat] = Field(default=None, ge=0)
+    k_ppm: Optional[FiniteFloat] = Field(default=None, ge=0)
     notes: Optional[str] = None
+
+    @field_validator("sampled_at")
+    @classmethod
+    def check_sample_time(cls, value):
+        if value > datetime.now(timezone.utc) + timedelta(minutes=5):
+            raise ValueError("sampled_at is too far in the future")
+        return value
 
 
 class AlertRuleUpdate(BaseModel):

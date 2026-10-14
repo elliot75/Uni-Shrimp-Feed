@@ -99,7 +99,7 @@ def update_rule(rule_id: UUID, body: AlertRuleUpdate, admin: dict = Depends(requ
         updated = dict(existing) | fields
         code = updated["code"]
         threshold = "min_value" if "LOW" in code or code == "DO_CRITICAL" else "max_value"
-        if updated.get(threshold) is None:
+        if updated.get(threshold) is None and code != "NH3_OUT_OF_RANGE":
             raise HTTPException(status_code=422, detail=f"{code} requires {threshold}")
         if code == "DEVICE_STALE" and updated[threshold] < 1:
             raise HTTPException(status_code=422, detail="DEVICE_STALE must be at least 1 minute")

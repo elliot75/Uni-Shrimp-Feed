@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from html import escape
+import logging
+from weakref import WeakKeyDictionary
 
 from access import farmer_ids_for_salesperson
 from email_service import send_email
@@ -10,6 +13,14 @@ from telegram_service import send_message
 
 NOTIFY_COOLDOWN = timedelta(hours=2)
 STALE_DEFAULT_MINUTES = 60
+logger = logging.getLogger(__name__)
+_PERMANENT_NOTIFY_ERRORS = {
+    "smtp not configured",
+    "telegram not configured",
+    "missing recipient",
+    "missing chat_id",
+}
+_notification_queues = WeakKeyDictionary()
 
 
 def _num(value) -> float | None:
@@ -18,23 +29,11 @@ def _num(value) -> float | None:
     return float(value)
 
 
-def _doc_days(cycle: dict | None) -> int | None:
-    if not cycle or not cycle.get("stocked_at"):
-        return None
-    stocked = cycle["stocked_at"]
-    if isinstance(stocked, datetime):
-        stocked = stocked.date()
-    return (date.today() - stocked).days
-
-
 def uses_10g_thresholds(cycle: dict | None) -> bool:
     if not cycle:
         return False
     weight = _num(cycle.get("sample_avg_weight_g"))
-    if weight is not None and weight >= 10:
-        return True
-    doc = _doc_days(cycle)
-    return cycle.get("stage") == "growout" and doc is not None and doc >= 35
+    return weight is not None and weight >= 10
 
 
 def water_change_pct(cycle: dict | None) -> int:
@@ -44,11 +43,21 @@ def water_change_pct(cycle: dict | None) -> int:
 
 
 def interpolate_nh3(lookup: list[dict], tan: float, ph: float) -> float | None:
-    """Bilinear interpolation on handbook TAN x pH table."""
+    """Bilinear interpolation on handbook TAN x pH table.
+
+    Values below the table are safer than the lowest cell, so they use that cell.
+    Only TAN or pH above the table is undetermined.
+    """
+    if not lookup or tan is None or ph is None:
+        return None
     if tan <= 0:
         return 0.0
     tans = sorted({float(r["tan_ppm"]) for r in lookup})
     phs = sorted({float(r["ph"]) for r in lookup})
+    if tan > tans[-1] or ph > phs[-1]:
+        return None
+    tan = max(float(tan), tans[0])
+    ph = max(float(ph), phs[0])
     grid = {(float(r["tan_ppm"]), float(r["ph"])): float(r["nh3_ppm"]) for r in lookup}
 
     def clamp_pair(values, x):
@@ -154,18 +163,48 @@ def _log_notification(conn, alert_id, user_id, channel, success, error):
         )
 
 
+def _sent_recently(conn, alert_id, user_id, channel) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM shrimp.notification_log
+            WHERE alert_event_id = %s AND user_id = %s AND channel = %s
+              AND success AND created_at > now() - interval '2 hours'
+            LIMIT 1
+            """,
+            (alert_id, user_id, channel),
+        )
+        return cur.fetchone() is not None
+
+
 def notify_alert(conn, event: dict, pond: dict) -> None:
     people = recipients_for_pond(conn, pond, event["severity"])
     subject = f"[Uni-Shrimp] {event['rule_code']} · {pond.get('code')}"
+    retryable = False
     for person in people:
         locale = person.get("locale") or "vi"
         body = event["message_vi"] if locale == "vi" else event["message_zh"]
         text = f"{pond.get('code')} {pond.get('name')}\n{body}"
-        html = f"<p><b>{pond.get('code')}</b> {pond.get('name')}</p><p>{body}</p>"
-        ok, err = send_email(person.get("email"), subject, html)
-        _log_notification(conn, event["id"], person["id"], "email", ok, err)
-        tok, terr = send_message(person.get("telegram_chat_id"), text)
-        _log_notification(conn, event["id"], person["id"], "telegram", tok, terr)
+        html = (
+            f"<p><b>{escape(str(pond.get('code') or ''))}</b> "
+            f"{escape(str(pond.get('name') or ''))}</p><p>{escape(str(body))}</p>"
+        )
+        if _sent_recently(conn, event["id"], person["id"], "email"):
+            email_ok, email_err = True, None
+        else:
+            email_ok, email_err = send_email(person.get("email"), subject, html)
+            _log_notification(conn, event["id"], person["id"], "email", email_ok, email_err)
+        if not email_ok and email_err not in _PERMANENT_NOTIFY_ERRORS:
+            retryable = True
+        if _sent_recently(conn, event["id"], person["id"], "telegram"):
+            tg_ok, tg_err = True, None
+        else:
+            tg_ok, tg_err = send_message(person.get("telegram_chat_id"), text)
+            _log_notification(conn, event["id"], person["id"], "telegram", tg_ok, tg_err)
+        if not tg_ok and tg_err not in _PERMANENT_NOTIFY_ERRORS:
+            retryable = True
+    if retryable:
+        return
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -175,6 +214,56 @@ def notify_alert(conn, event: dict, pond: dict) -> None:
             """,
             (event["id"],),
         )
+
+
+def _queue_notification(conn, event: dict, pond: dict) -> None:
+    queued = _notification_queues.get(conn)
+    if queued is None:
+        queued = []
+        _notification_queues[conn] = queued
+    queued.append((event, pond))
+
+
+def flush_notifications(conn) -> None:
+    """Send queued alerts after the caller's transaction has committed."""
+    queued = _notification_queues.pop(conn, None)
+    if not isinstance(queued, list) or not queued:
+        return
+    try:
+        for event, pond in queued:
+            notify_alert(conn, event, pond)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Alert notification failed; it will be retried")
+
+
+def retry_unnotified(conn, limit: int = 50) -> None:
+    """Deliver alerts saved before a crash, after the reading itself was already evaluated."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT * FROM shrimp.alert_events
+            WHERE resolved_at IS NULL
+              AND last_notified_at IS NULL
+              AND opened_at > now() - interval '7 days'
+            ORDER BY opened_at
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        events = [dict(row) for row in cur.fetchall()]
+    if not events:
+        return
+    try:
+        for event in events:
+            pond = load_pond(conn, event["pond_id"])
+            if pond:
+                notify_alert(conn, event, pond)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Alert notification retry failed")
 
 
 def _should_notify(event: dict) -> bool:
@@ -209,7 +298,7 @@ def upsert_alert(conn, pond, cycle, rule, value, message_vi, message_zh) -> None
             )
             event = dict(cur.fetchone())
             if _should_notify(event):
-                notify_alert(conn, event, pond)
+                _queue_notification(conn, event, pond)
             return
         cur.execute(
             """
@@ -231,7 +320,7 @@ def upsert_alert(conn, pond, cycle, rule, value, message_vi, message_zh) -> None
             ),
         )
         event = dict(cur.fetchone())
-    notify_alert(conn, event, pond)
+    _queue_notification(conn, event, pond)
 
 
 def resolve_alert(conn, pond_id, rule_code) -> None:
@@ -247,7 +336,7 @@ def resolve_alert(conn, pond_id, rule_code) -> None:
 
 
 def _msg(code, value, extra_vi="", extra_zh="", threshold=None):
-    shown = f"{value:.2f}" if isinstance(value, (int, float, Decimal)) else str(value)
+    shown = f"{value:.2f}" if isinstance(value, (int, float, Decimal)) else ("—" if value is None else str(value))
     limits = {
         "PH_LOW": 7.6, "PH_HIGH": 7.8, "ALK_LOW": 150,
         "CA_LOW_NURSERY": 240, "CA_LOW_GROWOUT": 160, "CA_LOW_10G": 200,
@@ -268,9 +357,11 @@ def _msg(code, value, extra_vi="", extra_zh="", threshold=None):
         "MG_LOW_GROWOUT": f"Mg {shown} ppm < {limit} (ao nuôi).",
         "MG_LOW_10G": f"Mg {shown} ppm < {limit} (tôm ≥ 10g).",
         "NO2_HIGH": f"NO₂ {shown} ppm ≥ {limit}.",
-        "NO2_HARVEST_EARLY": f"NO₂ ≥ {limit} ppm liên tục 7 ngày. Nên thu tỉa sớm.",
+        "NO2_HARVEST_EARLY": f"NO₂ > {limit} ppm liên tục 7 ngày. Nên cân nhắc thu tỉa sớm.",
         "NH3_WARN": f"NH₃ không ion hóa {shown} ppm (cảnh báo).",
         "NH3_DANGER": f"NH₃ không ion hóa {shown} ppm (độc hại).",
+        "NH3_OUT_OF_RANGE": "Không thể xác định NH₃ không ion hóa: thiếu pH gần thời điểm lấy mẫu, hoặc TAN/pH nằm ngoài phạm vi bảng hướng dẫn.",
+        "K_LOW": f"K⁺ {shown} ppm < {limit}.",
         "DEVICE_STALE": f"Thiết bị không gửi dữ liệu hơn {limit} phút.",
     }
     zh = {
@@ -286,9 +377,11 @@ def _msg(code, value, extra_vi="", extra_zh="", threshold=None):
         "MG_LOW_GROWOUT": f"Mg {shown} ppm < {limit}（養成池）。",
         "MG_LOW_10G": f"Mg {shown} ppm < {limit}（蝦 ≥ 10g）。",
         "NO2_HIGH": f"NO₂ {shown} ppm ≥ {limit}。",
-        "NO2_HARVEST_EARLY": f"NO₂ 連續 7 天 ≥ {limit} ppm，建議提前收成。",
+        "NO2_HARVEST_EARLY": f"NO₂ 連續 7 天 > {limit} ppm，建議考慮提前收成。",
         "NH3_WARN": f"未電離 NH₃ {shown} ppm（警告）。",
         "NH3_DANGER": f"未電離 NH₃ {shown} ppm（有害）。",
+        "NH3_OUT_OF_RANGE": "未電離 NH₃ 無法判定：採樣時缺少附近的 pH，或 TAN／pH 超出手冊表格範圍。",
+        "K_LOW": f"K⁺ {shown} ppm < {limit}。",
         "DEVICE_STALE": f"設備超過 {limit} 分鐘未回報。",
     }
     return vi.get(code, code) + extra_vi, zh.get(code, code) + extra_zh
@@ -309,24 +402,31 @@ def evaluate_probe_reading(conn, reading: dict) -> None:
             return
         if firing:
             extra_vi = extra_zh = ""
-            if code.startswith("PH") or code.startswith("NH3"):
-                pct = water_change_pct(cycle)
-                extra_vi = f" Nên thay nước {pct}%."
-                extra_zh = f" 建議換水 {pct}%。"
+            if code == "PH_LOW":
+                extra_vi = " Theo sổ tay, sử dụng CaO để điều chỉnh pH."
+                extra_zh = " 手冊建議使用 CaO 調整 pH。"
+            elif code == "PH_HIGH":
+                extra_vi = " Theo sổ tay, tăng liều mật đường."
+                extra_zh = " 手冊建議增加糖蜜用量。"
             threshold = rule.get("min_value" if "LOW" in code or code == "DO_CRITICAL" else "max_value")
             vi, zh = _msg(code, value, extra_vi, extra_zh, threshold)
             upsert_alert(conn, pond, cycle, rule, value, vi, zh)
         else:
             resolve_alert(conn, pond["id"], code)
 
-    if ph is not None:
+    latest = _latest_probe_metrics(conn, pond["id"])
+    current_ph = ph is not None and latest.get("ph") == reading.get("id")
+    current_do = do_v is not None and latest.get("do_mg_l") == reading.get("id")
+    if current_ph:
         handle("PH_LOW", ph < _num(rules.get("PH_LOW", {}).get("min_value")) if rules.get("PH_LOW") else False, ph)
         handle("PH_HIGH", ph > _num(rules.get("PH_HIGH", {}).get("max_value")) if rules.get("PH_HIGH") else False, ph)
-    if do_v is not None:
+    if current_do:
         crit = rules.get("DO_CRITICAL")
         low = rules.get("DO_LOW")
         handle("DO_CRITICAL", bool(crit) and do_v < _num(crit["min_value"]), do_v)
         handle("DO_LOW", bool(low) and do_v < _num(low["min_value"]) and not (crit and do_v < _num(crit["min_value"])), do_v)
+    if ph is not None:
+        reevaluate_tan_for_probe(conn, reading)
     with conn.cursor() as cur:
         cur.execute(
             "UPDATE shrimp.probe_readings SET alerts_evaluated_at = now() WHERE id = %s",
@@ -334,32 +434,56 @@ def evaluate_probe_reading(conn, reading: dict) -> None:
         )
 
 
-def _latest_ph(conn, pond_id) -> float | None:
+def _latest_probe_metrics(conn, pond_id) -> dict:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              (SELECT id FROM shrimp.probe_readings WHERE pond_id = %s AND ph IS NOT NULL
+               AND recorded_at <= now() + interval '5 minutes'
+               ORDER BY recorded_at DESC, id DESC LIMIT 1) AS ph,
+              (SELECT id FROM shrimp.probe_readings WHERE pond_id = %s AND do_mg_l IS NOT NULL
+               AND recorded_at <= now() + interval '5 minutes'
+               ORDER BY recorded_at DESC, id DESC LIMIT 1) AS do_mg_l
+            """,
+            (pond_id, pond_id),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else {"ph": None, "do_mg_l": None}
+
+
+def _latest_ph(conn, pond_id, sampled_at=None, cycle_id=None) -> float | None:
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT ph FROM shrimp.probe_readings
             WHERE pond_id = %s AND ph IS NOT NULL
-            ORDER BY recorded_at DESC LIMIT 1
+              AND cycle_id IS NOT DISTINCT FROM %s
+              AND recorded_at <= now() + interval '5 minutes'
+              AND (%s IS NULL OR recorded_at <= %s)
+              AND (%s IS NULL OR recorded_at >= %s - interval '60 minutes')
+            ORDER BY recorded_at DESC, id DESC LIMIT 1
             """,
-            (pond_id,),
+            (pond_id, cycle_id, sampled_at, sampled_at, sampled_at, sampled_at),
         )
         row = cur.fetchone()
         return _num(row["ph"]) if row else None
 
 
-def consecutive_no2_days(conn, pond_id, threshold: float) -> int:
+def consecutive_no2_days(conn, pond_id, threshold: float, cycle_id=None) -> int:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT DISTINCT sampled_at::date AS d, max(no2_ppm) AS no2
+            SELECT DISTINCT ON ((sampled_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)
+                   (sampled_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS d, no2_ppm AS no2
             FROM shrimp.lab_tests
-            WHERE pond_id = %s AND no2_ppm IS NOT NULL
-            GROUP BY sampled_at::date
-            ORDER BY d DESC
+            WHERE pond_id = %s AND cycle_id IS NOT DISTINCT FROM %s AND no2_ppm IS NOT NULL
+              AND sampled_at <= now() + interval '5 minutes'
+            ORDER BY (sampled_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date DESC,
+                     sampled_at DESC, created_at DESC, id DESC
             LIMIT 14
             """,
-            (pond_id,),
+            (pond_id, cycle_id),
         )
         rows = cur.fetchall()
     streak = 0
@@ -370,12 +494,29 @@ def consecutive_no2_days(conn, pond_id, threshold: float) -> int:
     for row in rows:
         if row["d"] != expected:
             break
-        if _num(row["no2"]) >= threshold:
+        if _num(row["no2"]) > threshold:
             streak += 1
             expected = expected - timedelta(days=1)
         else:
             break
     return streak
+
+
+def _latest_lab_metrics(conn, pond_id, cycle_id=None) -> dict:
+    fields = ("no2_ppm", "nh3_ppm", "alkalinity_ppm", "ca_ppm", "mg_ppm", "k_ppm")
+    latest = ", ".join(
+        f"(SELECT id FROM shrimp.lab_tests WHERE pond_id = %s AND cycle_id IS NOT DISTINCT FROM %s "
+        f"AND {field} IS NOT NULL AND sampled_at <= now() + interval '5 minutes' "
+        f"ORDER BY sampled_at DESC, created_at DESC, id DESC LIMIT 1) AS {field}"
+        for field in fields
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT {latest}",
+            (pond_id, cycle_id) * len(fields),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else {field: None for field in fields}
 
 
 def evaluate_lab_test(conn, lab: dict) -> None:
@@ -385,11 +526,14 @@ def evaluate_lab_test(conn, lab: dict) -> None:
     cycle = load_active_cycle(conn, pond["id"])
     rules = load_rules(conn)
     lookup = load_lookup(conn)
+    lab_cycle_id = lab.get("cycle_id")
+    latest = _latest_lab_metrics(conn, pond["id"], lab_cycle_id)
+    active_cycle_id = (cycle or {}).get("id")
+    lab_cycle_is_active = (str(lab_cycle_id) if lab_cycle_id is not None else None) == (
+        str(active_cycle_id) if active_cycle_id is not None else None
+    )
     stage = (cycle or {}).get("stage") or ("nursery" if pond["pond_type"] == "nursery" else "growout")
     big = uses_10g_thresholds(cycle)
-    pct = water_change_pct(cycle if cycle else {"stage": stage})
-    extra_vi = f" Nên thay nước {pct}%."
-    extra_zh = f" 建議換水 {pct}%。"
 
     def handle(code, firing, value, extra=("", "")):
         rule = rules.get(code)
@@ -402,11 +546,18 @@ def evaluate_lab_test(conn, lab: dict) -> None:
         else:
             resolve_alert(conn, pond["id"], code)
 
-    alk = _num(lab.get("alkalinity_ppm"))
+    def current(field):
+        return (
+            lab_cycle_is_active
+            and lab.get(field) is not None
+            and latest.get(field) == lab.get("id")
+        )
+
+    alk = _num(lab.get("alkalinity_ppm")) if current("alkalinity_ppm") else None
     if alk is not None and rules.get("ALK_LOW"):
         handle("ALK_LOW", alk < _num(rules["ALK_LOW"]["min_value"]), alk)
 
-    ca = _num(lab.get("ca_ppm"))
+    ca = _num(lab.get("ca_ppm")) if current("ca_ppm") else None
     if ca is not None:
         if big and rules.get("CA_LOW_10G"):
             handle("CA_LOW_10G", ca < _num(rules["CA_LOW_10G"]["min_value"]), ca)
@@ -421,7 +572,7 @@ def evaluate_lab_test(conn, lab: dict) -> None:
             resolve_alert(conn, pond["id"], "CA_LOW_NURSERY")
             resolve_alert(conn, pond["id"], "CA_LOW_10G")
 
-    mg = _num(lab.get("mg_ppm"))
+    mg = _num(lab.get("mg_ppm")) if current("mg_ppm") else None
     if mg is not None:
         if big and rules.get("MG_LOW_10G"):
             handle("MG_LOW_10G", mg < _num(rules["MG_LOW_10G"]["min_value"]), mg)
@@ -436,32 +587,108 @@ def evaluate_lab_test(conn, lab: dict) -> None:
             resolve_alert(conn, pond["id"], "MG_LOW_NURSERY")
             resolve_alert(conn, pond["id"], "MG_LOW_10G")
 
-    no2 = _num(lab.get("no2_ppm"))
+    no2 = _num(lab.get("no2_ppm")) if current("no2_ppm") else None
     if no2 is not None and rules.get("NO2_HIGH"):
-        handle("NO2_HIGH", no2 >= _num(rules["NO2_HIGH"]["max_value"]), no2, (extra_vi, extra_zh))
-    if no2 is not None and rules.get("NO2_HARVEST_EARLY"):
-        streak = consecutive_no2_days(conn, pond["id"], _num(rules["NO2_HARVEST_EARLY"]["max_value"]))
-        handle("NO2_HARVEST_EARLY", streak >= 7, no2)
+        handle("NO2_HIGH", no2 >= _num(rules["NO2_HIGH"]["max_value"]), no2)
+    # A backfilled day can complete or break the streak without being the latest sample.
+    if lab.get("no2_ppm") is not None and lab_cycle_is_active and rules.get("NO2_HARVEST_EARLY"):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT no2_ppm FROM shrimp.lab_tests
+                WHERE pond_id = %s AND cycle_id IS NOT DISTINCT FROM %s AND no2_ppm IS NOT NULL
+                  AND sampled_at <= now() + interval '5 minutes'
+                ORDER BY sampled_at DESC, created_at DESC, id DESC LIMIT 1
+                """,
+                (pond["id"], lab_cycle_id),
+            )
+            newest = cur.fetchone()
+        if newest:
+            streak = consecutive_no2_days(
+                conn, pond["id"], _num(rules["NO2_HARVEST_EARLY"]["max_value"]), lab_cycle_id
+            )
+            handle("NO2_HARVEST_EARLY", streak >= 7, _num(newest["no2_ppm"]))
 
     tan = _num(lab.get("nh3_ppm"))
-    ph = _latest_ph(conn, pond["id"])
-    unionized = None
-    if tan is not None and ph is not None and lookup:
-        unionized = interpolate_nh3(lookup, tan, ph)
+    tan_is_current = current("nh3_ppm")
+    ph = _latest_ph(conn, pond["id"], lab.get("sampled_at"), lab_cycle_id)
+    if tan is not None:
+        unionized = interpolate_nh3(lookup, tan, ph) if ph is not None and lookup else None
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE shrimp.lab_tests SET nh3_unionized_ppm = %s WHERE id = %s",
                 (unionized, lab["id"]),
             )
-        danger = rules.get("NH3_DANGER")
-        warn = rules.get("NH3_WARN")
-        if danger:
-            handle("NH3_DANGER", unionized >= _num(danger["max_value"]), unionized, (extra_vi, extra_zh))
-        if warn:
-            firing = unionized >= _num(warn["max_value"]) and not (
-                danger and unionized >= _num(danger["max_value"])
+        if tan_is_current:
+            if unionized is None:
+                handle("NH3_OUT_OF_RANGE", True, None)
+                resolve_alert(conn, pond["id"], "NH3_WARN")
+                resolve_alert(conn, pond["id"], "NH3_DANGER")
+            else:
+                handle("NH3_OUT_OF_RANGE", False, None)
+                danger = rules.get("NH3_DANGER")
+                warn = rules.get("NH3_WARN")
+                pct = water_change_pct(cycle if cycle else {"stage": stage})
+                change = (f" Nên thay nước {pct}%.", f" 建議換水 {pct}%。")
+                if danger:
+                    firing = unionized >= _num(danger["max_value"])
+                    handle("NH3_DANGER", firing, unionized, change if firing else ("", ""))
+                if warn:
+                    firing = unionized >= _num(warn["max_value"]) and not (
+                        danger and unionized >= _num(danger["max_value"])
+                    )
+                    handle("NH3_WARN", firing, unionized)
+
+    potassium = _num(lab.get("k_ppm")) if current("k_ppm") else None
+    if potassium is not None and rules.get("K_LOW"):
+        handle("K_LOW", potassium < _num(rules["K_LOW"]["min_value"]), potassium)
+
+
+def reevaluate_tan_for_probe(conn, reading) -> None:
+    # Even an older probe can supply the missing pH for a historical sample.
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT * FROM shrimp.lab_tests
+            WHERE pond_id = %s AND cycle_id IS NOT DISTINCT FROM %s
+              AND nh3_ppm IS NOT NULL
+              AND sampled_at >= %s
+              AND sampled_at <= %s + interval '60 minutes'
+              AND sampled_at <= now() + interval '5 minutes'
+            """,
+            (reading["pond_id"], reading.get("cycle_id"),
+             reading["recorded_at"], reading["recorded_at"]),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+    for lab in rows:
+        evaluate_lab_test(conn, lab)
+
+
+def reevaluate_latest_mineral_tests(conn, pond_id, cycle_id) -> None:
+    reevaluate_latest_lab_tests(conn, pond_id, cycle_id, fields=("ca_ppm", "mg_ppm"))
+
+
+def reevaluate_latest_lab_tests(conn, pond_id, cycle_id, fields=None) -> None:
+    if fields is None:
+        fields = ("no2_ppm", "nh3_ppm", "alkalinity_ppm", "ca_ppm", "mg_ppm", "k_ppm")
+    latest_rows = {}
+    with conn.cursor() as cur:
+        for field in fields:
+            cur.execute(
+                f"""
+                SELECT * FROM shrimp.lab_tests
+                WHERE pond_id = %s AND cycle_id IS NOT DISTINCT FROM %s AND {field} IS NOT NULL
+                  AND sampled_at <= now() + interval '5 minutes'
+                ORDER BY sampled_at DESC, created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (pond_id, cycle_id),
             )
-            handle("NH3_WARN", firing, unionized, (extra_vi, extra_zh))
+            row = cur.fetchone()
+            if row:
+                latest_rows[row["id"]] = dict(row)
+    for lab in latest_rows.values():
+        evaluate_lab_test(conn, lab)
 
 
 def evaluate_stale_devices(conn) -> None:
@@ -477,7 +704,13 @@ def evaluate_stale_devices(conn) -> None:
             FROM shrimp.devices d
             JOIN shrimp.ponds p ON p.id = d.pond_id
             WHERE d.is_active = true AND d.pond_id IS NOT NULL
-              AND (d.last_seen_at IS NULL OR d.last_seen_at < now() - (%s || ' minutes')::interval)
+              AND NOT EXISTS (
+                  SELECT 1 FROM shrimp.probe_readings pr
+                  WHERE pr.device_id = d.id
+                    AND pr.pond_id = d.pond_id
+                    AND pr.recorded_at >= now() - (%s || ' minutes')::interval
+                    AND pr.recorded_at <= now() + interval '5 minutes'
+              )
             """,
             (str(int(minutes)),),
         )

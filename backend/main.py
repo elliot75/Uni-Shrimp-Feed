@@ -17,7 +17,7 @@ if env_path.exists():
 else:
     load_dotenv()
 
-from alerts import evaluate_stale_devices, process_pending_readings
+from alerts import evaluate_stale_devices, flush_notifications, process_pending_readings, retry_unnotified
 from db import get_connection
 from routers import alerts as alerts_routes
 from routers import auth_routes, dashboard, devices, ponds, probe_readings, users
@@ -32,41 +32,48 @@ def _handle_telegram_updates() -> None:
     if not updates:
         return
     conn = get_connection()
+    acked = _tg_offset
     try:
         for upd in updates:
-            _tg_offset = upd["update_id"] + 1
             msg = upd.get("message") or {}
             text = (msg.get("text") or "").strip()
             chat = msg.get("chat") or {}
             chat_id = str(chat.get("id") or "")
-            if not text.startswith("/start") or not chat_id:
-                continue
-            parts = text.split()
-            code = parts[1] if len(parts) > 1 else ""
-            if not code:
-                continue
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE shrimp.users
-                    SET telegram_chat_id = %s,
-                        telegram_bind_code = NULL,
-                        telegram_bind_expires_at = NULL,
-                        updated_at = now()
-                    WHERE telegram_bind_code = %s
-                      AND telegram_bind_expires_at > now()
-                    RETURNING id
-                    """,
-                    (chat_id, code),
-                )
-                row = cur.fetchone()
+            if text.startswith("/start") and chat_id:
+                parts = text.split(maxsplit=1)
+                code = parts[1] if len(parts) > 1 else ""
+                if code:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE shrimp.users
+                            SET telegram_chat_id = %s,
+                                telegram_bind_code = NULL,
+                                telegram_bind_expires_at = NULL,
+                                updated_at = now()
+                            WHERE id = (
+                                SELECT id FROM shrimp.users
+                                WHERE telegram_bind_code = %s
+                                  AND telegram_bind_expires_at > now()
+                                LIMIT 1
+                            )
+                            RETURNING id
+                            """,
+                            (chat_id, code),
+                        )
+                        row = cur.fetchone()
+                    from telegram_service import send_message
+                    if row:
+                        send_message(chat_id, "Uni-Shrimp: Telegram bound / Đã liên kết / 已綁定")
+                    else:
+                        send_message(chat_id, "Uni-Shrimp: invalid or expired code")
             conn.commit()
-            from telegram_service import send_message
-            if row:
-                send_message(chat_id, "Uni-Shrimp: Telegram bound / Đã liên kết / 已綁定")
-            else:
-                send_message(chat_id, "Uni-Shrimp: invalid or expired code")
+            acked = upd["update_id"] + 1
+    except Exception:
+        conn.rollback()
+        raise
     finally:
+        _tg_offset = acked
         conn.close()
 
 
@@ -76,6 +83,8 @@ def _worker_tick() -> None:
         process_pending_readings(conn)
         evaluate_stale_devices(conn)
         conn.commit()
+        flush_notifications(conn)
+        retry_unnotified(conn)
     finally:
         conn.close()
     _handle_telegram_updates()

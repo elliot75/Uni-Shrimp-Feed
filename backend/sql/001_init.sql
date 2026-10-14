@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS shrimp.users (
     telegram_bind_code text,
     telegram_bind_expires_at timestamptz,
     is_active       boolean NOT NULL DEFAULT true,
+    token_version   integer NOT NULL DEFAULT 1,
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now(),
     created_by      uuid REFERENCES shrimp.users(id)
@@ -285,6 +286,67 @@ INSERT INTO shrimp.alert_rules (code, metric, min_value, max_value, severity, st
     ('DEVICE_STALE', 'heartbeat', NULL, 60, 'warn', NULL, 80)
 ON CONFLICT (code) DO NOTHING;
 
+-- A closed cycle without a harvest date is not open-ended.
+-- Overlapping ranges belong to the later stocking date, so a shared boundary day is not assigned twice.
+CREATE OR REPLACE FUNCTION shrimp.cycle_for_sample(p_pond_id uuid, p_sampled_at timestamptz)
+RETURNS uuid
+LANGUAGE plpgsql
+SET search_path = shrimp, pg_temp
+AS $$
+DECLARE
+    v_day date := (p_sampled_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date;
+    v_winner uuid;
+    v_stocked date;
+    v_ties int;
+    v_undated uuid[];
+    v_active_undated uuid;
+BEGIN
+    SELECT id, stocked_at INTO v_winner, v_stocked
+    FROM shrimp.cycles
+    WHERE pond_id = p_pond_id
+      AND status <> 'planned'
+      AND stocked_at IS NOT NULL
+      AND stocked_at <= v_day
+      AND (
+            (status = 'active' AND (harvested_at IS NULL OR v_day <= harvested_at))
+         OR (status <> 'active' AND harvested_at IS NOT NULL AND v_day <= harvested_at)
+      )
+    ORDER BY stocked_at DESC, created_at DESC
+    LIMIT 1;
+
+    IF v_winner IS NOT NULL THEN
+        SELECT count(*) INTO v_ties
+        FROM shrimp.cycles
+        WHERE pond_id = p_pond_id
+          AND status <> 'planned'
+          AND stocked_at = v_stocked
+          AND stocked_at <= v_day
+          AND (
+                (status = 'active' AND (harvested_at IS NULL OR v_day <= harvested_at))
+             OR (status <> 'active' AND harvested_at IS NOT NULL AND v_day <= harvested_at)
+          );
+        IF v_ties > 1 THEN
+            v_winner := NULL;
+        END IF;
+    END IF;
+
+    SELECT array_agg(id) INTO v_undated
+    FROM shrimp.cycles
+    WHERE pond_id = p_pond_id AND status <> 'planned' AND stocked_at IS NULL;
+
+    IF v_winner IS NOT NULL AND v_undated IS NULL THEN
+        RETURN v_winner;
+    END IF;
+    IF v_winner IS NULL AND cardinality(v_undated) = 1
+       AND v_day = (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date THEN
+        SELECT id INTO v_active_undated FROM shrimp.cycles
+        WHERE id = v_undated[1] AND status = 'active';
+        RETURN v_active_undated;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION shrimp.ingest_probe_reading(
     p_device_serial      text,
     p_recorded_at        timestamptz,
@@ -317,6 +379,9 @@ BEGIN
     IF p_recorded_at IS NULL THEN
         RAISE EXCEPTION 'recorded_at is required' USING ERRCODE = '22023';
     END IF;
+    IF p_recorded_at > now() + interval '5 minutes' THEN
+        RAISE EXCEPTION 'recorded_at is too far in the future' USING ERRCODE = '22023';
+    END IF;
 
     SELECT * INTO v_device
     FROM shrimp.devices
@@ -329,10 +394,7 @@ BEGIN
         RAISE EXCEPTION 'device % is not bound to a pond', p_device_serial USING ERRCODE = '22023';
     END IF;
 
-    SELECT c.id INTO v_cycle_id
-    FROM shrimp.cycles c
-    WHERE c.pond_id = v_device.pond_id AND c.status = 'active'
-    LIMIT 1;
+    v_cycle_id := shrimp.cycle_for_sample(v_device.pond_id, p_recorded_at);
 
     INSERT INTO shrimp.probe_readings (
         device_serial, device_id, pond_id, cycle_id, recorded_at,
@@ -355,8 +417,10 @@ BEGIN
     END IF;
 
     UPDATE shrimp.devices
-    SET last_seen_at = now(), updated_at = now()
-    WHERE id = v_device.id;
+    SET last_seen_at = LEAST(p_recorded_at, now()),
+        updated_at = now()
+    WHERE id = v_device.id
+      AND (last_seen_at IS NULL OR p_recorded_at > last_seen_at);
 
     RETURN v_id;
 END;
@@ -373,7 +437,7 @@ REVOKE ALL ON FUNCTION shrimp.ingest_probe_reading(
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'shrimp_device') THEN
-        CREATE ROLE shrimp_device LOGIN PASSWORD 'change-me';
+        CREATE ROLE shrimp_device LOGIN;
     END IF;
 END $$;
 

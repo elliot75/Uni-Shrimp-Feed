@@ -28,7 +28,7 @@ Docker：`docker compose up --build`（前端 8081，後端 8001）。
 
 見 [docs/probe-ingest.md](docs/probe-ingest.md)。ESP32 使用 `POST /api/probe-readings`，以 `X-Device-Key` 傳送各設備專屬金鑰。管理員在設備頁產生 15 分鐘有效的一次性啟用碼，ESP32 首次配網時以 `POST /api/devices/activate` 換取金鑰並存入 NVS；所有設備可使用相同韌體。先套用 `backend/sql/004_device_api_keys.sql`、`005_device_activation_codes.sql` 並重新啟動後端。管理員仍可使用 `POST /api/devices/{device_id}/ingest-key` 直接輪替金鑰。既有 `shrimp_device` 直接呼叫 `shrimp.ingest_probe_reading(...)` 的方式仍保留。
 
-主要水溫使用 DO 探頭的 `do_temp_c`，由資料庫自動產生 `temp_c`；缺值時不以其他探頭水溫替代。儀表板與蝦池頁顯示 pH、電位、DO、飽和度、鹽度、電導度、TDS 與水溫，並保留 pH／電導探頭水溫。既有資料庫需套用 `backend/sql/003_do_water_temperature.sql`（或執行初始化腳本）。
+主要水溫使用 DO 探頭的 `do_temp_c`，由資料庫自動產生 `temp_c`；缺值時不以其他探頭水溫替代。儀表板與蝦池頁顯示 pH、電位、DO、飽和度、鹽度、電導度、TDS 與水溫，並保留 pH／電導探頭水溫。既有資料庫需依序套用 `backend/sql/003` 到 `009`（或重新執行初始化腳本）後再啟動後端。`009` 會補上缺少收成日的已結束週期，並加入登入階段用的 `token_version`。
 
 ## 測試
 

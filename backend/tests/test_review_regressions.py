@@ -40,6 +40,17 @@ def test_mixed_fresh_and_stale_devices_keep_alert_open():
     upsert.assert_called_once()
 
 
+def test_device_staleness_is_checked_against_that_device_readings():
+    conn, cur = connection_with_cursor()
+    cur.fetchall.side_effect = [[], []]
+    with patch.object(alerts, "load_rules", return_value={"DEVICE_STALE": {"code": "DEVICE_STALE", "max_value": 60}}):
+        alerts.evaluate_stale_devices(conn)
+    sql = cur.execute.call_args_list[0].args[0]
+    assert "pr.device_id = d.id" in sql
+    assert "pr.pond_id = d.pond_id" in sql
+    assert "pr.recorded_at <= now() + interval '5 minutes'" in sql
+
+
 def test_probe_reading_does_not_clear_other_devices_outage():
     conn, _ = connection_with_cursor()
     with patch.object(alerts, "load_pond", return_value={"id": "pond-a"}), \
@@ -60,6 +71,15 @@ def test_rule_required_threshold_cannot_be_cleared(code, field):
     conn.commit.assert_not_called()
 
 
+def test_thresholdless_rule_can_be_edited():
+    conn, cur = connection_with_cursor()
+    existing = {"id": "rule-a", "code": "NH3_OUT_OF_RANGE", "max_value": None, "is_active": True}
+    cur.fetchone.side_effect = [existing, existing | {"is_active": False}]
+    result = update_rule("rule-a", AlertRuleUpdate(is_active=False), {}, conn)
+    assert result["is_active"] is False
+    conn.commit.assert_called_once()
+
+
 def test_worker_keeps_event_loop_responsive():
     async def scenario():
         started = threading.Event()
@@ -74,6 +94,8 @@ def test_worker_keeps_event_loop_responsive():
         with patch.object(main, "get_connection", return_value=conn), \
              patch.object(main, "process_pending_readings", side_effect=slow_processing), \
              patch.object(main, "evaluate_stale_devices"), \
+             patch.object(main, "flush_notifications") as flush, \
+             patch.object(main, "retry_unnotified"), \
              patch.object(main, "_handle_telegram_updates", side_effect=finished.set):
             loop = asyncio.get_running_loop()
             before = loop.time()
@@ -86,6 +108,7 @@ def test_worker_keeps_event_loop_responsive():
                 release.set()
                 while not finished.is_set():
                     await asyncio.sleep(0.005)
+                flush.assert_called_once_with(conn)
                 worker.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await worker
@@ -102,6 +125,7 @@ def test_existing_alert_refreshes_values_before_notification():
     pond = {"id": "pond-a"}
     with patch.object(alerts, "notify_alert") as notify:
         alerts.upsert_alert(conn, pond, None, rule, 9, "updated", "updated")
+        alerts.flush_notifications(conn)
     notify.assert_called_once_with(conn, updated, pond)
 
 
@@ -113,18 +137,57 @@ def test_alert_messages_use_configured_threshold(code, threshold):
 
 
 def test_harvest_rule_is_independent_of_no2_warning():
-    conn, _ = connection_with_cursor()
+    conn, cur = connection_with_cursor()
+    cur.fetchone.return_value = {"no2_ppm": 10}
     rule = {"code": "NO2_HARVEST_EARLY", "max_value": 9}
     with patch.object(alerts, "load_pond", return_value={"id": "pond-a", "pond_type": "growout"}), \
          patch.object(alerts, "load_active_cycle", return_value=None), \
          patch.object(alerts, "load_lookup", return_value=[]), \
          patch.object(alerts, "_latest_ph", return_value=None), \
+         patch.object(alerts, "_latest_lab_metrics", return_value={"no2_ppm": "lab-a"}), \
          patch.object(alerts, "load_rules", return_value={rule["code"]: rule}), \
          patch.object(alerts, "consecutive_no2_days", return_value=7) as streak, \
          patch.object(alerts, "upsert_alert") as upsert:
-        alerts.evaluate_lab_test(conn, {"pond_id": "pond-a", "no2_ppm": 10})
-    streak.assert_called_once_with(conn, "pond-a", 9)
+        alerts.evaluate_lab_test(conn, {"id": "lab-a", "pond_id": "pond-a", "no2_ppm": 10})
+    streak.assert_called_once_with(conn, "pond-a", 9, None)
     upsert.assert_called_once()
+
+
+def test_nh3_lookup_rejects_out_of_range_values():
+    lookup = [
+        {"tan_ppm": 0.25, "ph": 7.0, "nh3_ppm": 0.01},
+        {"tan_ppm": 10, "ph": 9.0, "nh3_ppm": 3.0},
+    ]
+    assert alerts.interpolate_nh3(lookup, 10.1, 8.0) is None
+    assert alerts.interpolate_nh3(lookup, 1.0, 9.1) is None
+
+
+def test_historical_tan_is_calculated_without_driving_current_alerts():
+    conn, cur = connection_with_cursor()
+    sampled_at = "2026-10-01T12:00:00Z"
+    lab = {
+        "id": "lab-a", "pond_id": "pond-a", "cycle_id": "old-cycle",
+        "sampled_at": sampled_at, "nh3_ppm": 1.0,
+    }
+    lookup = [
+        {"tan_ppm": 0.25, "ph": 7.0, "nh3_ppm": 0.01},
+        {"tan_ppm": 0.25, "ph": 9.0, "nh3_ppm": 0.1},
+        {"tan_ppm": 10, "ph": 7.0, "nh3_ppm": 0.5},
+        {"tan_ppm": 10, "ph": 9.0, "nh3_ppm": 5.0},
+    ]
+    with patch.object(alerts, "load_pond", return_value={"id": "pond-a", "pond_type": "growout"}), \
+         patch.object(alerts, "load_active_cycle", return_value={"id": "new-cycle", "stage": "growout"}), \
+         patch.object(alerts, "load_rules", return_value={"NH3_DANGER": {"code": "NH3_DANGER", "max_value": 0.2}}), \
+         patch.object(alerts, "load_lookup", return_value=lookup), \
+         patch.object(alerts, "_latest_lab_metrics", return_value={"nh3_ppm": "lab-a"}), \
+         patch.object(alerts, "_latest_ph", return_value=8.0), \
+         patch.object(alerts, "upsert_alert") as upsert, \
+         patch.object(alerts, "resolve_alert") as resolve:
+        alerts.evaluate_lab_test(conn, lab)
+    cur.execute.assert_called_once()
+    assert cur.execute.call_args.args[1][0] is not None
+    upsert.assert_not_called()
+    resolve.assert_not_called()
 
 
 def test_invalid_token_subject_returns_401_without_querying_db():

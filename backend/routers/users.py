@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
 
 from access import farmer_ids_for_salesperson
-from auth import get_current_user, hash_password, require_admin
+from auth import bump_token_version, get_current_user, hash_password, require_admin
 from db import get_db
 from models import AssignmentBody, UserCreate, UserUpdate
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+logger = logging.getLogger(__name__)
 
 
 def _public(row) -> dict:
@@ -82,9 +84,10 @@ def create_user(body: UserCreate, admin: dict = Depends(require_admin), conn=Dep
             )
             row = cur.fetchone()
             conn.commit()
-        except Exception as exc:
+        except Exception:
             conn.rollback()
-            raise HTTPException(status_code=400, detail=f"Could not create user: {exc}")
+            logger.exception("User creation failed")
+            raise HTTPException(status_code=400, detail="Unable to create user; check the supplied values") from None
     return _public(row)
 
 
@@ -95,6 +98,7 @@ def update_user(user_id: UUID, body: UserUpdate, admin: dict = Depends(require_a
         raise HTTPException(status_code=400, detail="No fields")
     if "password" in fields:
         fields["password_hash"] = hash_password(fields.pop("password"))
+        bump_token_version(conn, str(user_id))
     sets = [f"{k} = %s" for k in fields]
     args = list(fields.values()) + [str(user_id)]
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -152,9 +156,10 @@ def create_assignment(body: AssignmentBody, admin: dict = Depends(require_admin)
                 (str(body.salesperson_id), str(body.farmer_id)),
             )
             conn.commit()
-        except Exception as exc:
+        except Exception:
             conn.rollback()
-            raise HTTPException(status_code=400, detail=str(exc))
+            logger.exception("Assignment creation failed")
+            raise HTTPException(status_code=400, detail="Unable to create assignment") from None
     return {"ok": True}
 
 

@@ -1,20 +1,77 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2.extras import RealDictCursor
 
 from access import get_pond_or_404, require_farmer_access, require_pond_access, visible_pond_filter
-from alerts import evaluate_lab_test
+from alerts import (
+    evaluate_lab_test,
+    flush_notifications,
+    reevaluate_latest_lab_tests,
+    reevaluate_latest_mineral_tests,
+)
 from auth import get_current_user
 from db import get_db
 from models import CycleCreate, CycleUpdate, LabTestCreate, PondCreate, PondUpdate
 
 router = APIRouter(prefix="/api", tags=["ponds"])
+logger = logging.getLogger(__name__)
 
 RANGE_HOURS = {"24h": 24, "7d": 24 * 7, "30d": 24 * 30}
+FARM_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
+
+
+def _covers_sample(cycle, day) -> bool:
+    if cycle["status"] == "planned" or not cycle.get("stocked_at") or cycle["stocked_at"] > day:
+        return False
+    end = cycle.get("harvested_at")
+    if cycle["status"] in ("harvested", "aborted"):
+        return end is not None and day <= end
+    return end is None or day <= end
+
+
+def _dated_owners(cycles, day):
+    covering = [cycle for cycle in cycles if _covers_sample(cycle, day)]
+    if not covering:
+        return []
+    latest = max(cycle["stocked_at"] for cycle in covering)
+    return [cycle for cycle in covering if cycle["stocked_at"] == latest]
+
+
+def _lab_cycle_id(conn, pond_id, body: LabTestCreate):
+    sampled_date = body.sampled_at.astimezone(FARM_TIMEZONE).date()
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT * FROM shrimp.cycles WHERE pond_id = %s", (str(pond_id),))
+        cycles = [dict(row) for row in cur.fetchall()]
+    if "cycle_id" in body.model_fields_set:
+        if body.cycle_id is None:
+            return None
+        selected = next((c for c in cycles if str(c["id"]) == str(body.cycle_id)), None)
+        if selected is None or selected["status"] == "planned":
+            raise HTTPException(status_code=422, detail="Select an existing farming cycle for this pond")
+        if selected["status"] in ("harvested", "aborted") and not selected.get("harvested_at"):
+            raise HTTPException(status_code=422, detail="Closed cycle is missing a harvest date")
+        if (selected.get("stocked_at") and sampled_date < selected["stocked_at"]) or (
+            selected.get("harvested_at") and sampled_date > selected["harvested_at"]
+        ):
+            raise HTTPException(status_code=422, detail="Sample date is outside the selected cycle")
+        return selected["id"]
+    owners = _dated_owners(cycles, sampled_date)
+    undated = [c for c in cycles if c["status"] != "planned" and not c.get("stocked_at")]
+    if len(owners) == 1 and not undated:
+        return owners[0]["id"]
+    if len(owners) > 1:
+        raise HTTPException(status_code=422, detail="Cycle dates overlap; select the sample's cycle")
+    if undated:
+        if not owners and len(undated) == 1 and undated[0]["status"] == "active" and sampled_date == datetime.now(FARM_TIMEZONE).date():
+            return undated[0]["id"]
+        raise HTTPException(status_code=422, detail="Cycle dates are missing; select the sample's cycle")
+    return None
 
 
 def _clean(row) -> dict:
@@ -37,9 +94,8 @@ def _cycle_doc(cycle: dict | None) -> dict | None:
     d = _clean(cycle)
     if cycle.get("stocked_at"):
         stocked = cycle["stocked_at"]
-        from datetime import date
         if hasattr(stocked, "year") and not hasattr(stocked, "hour"):
-            d["doc"] = (date.today() - stocked).days
+            d["doc"] = (datetime.now(FARM_TIMEZONE).date() - stocked).days
         else:
             d["doc"] = None
     else:
@@ -106,9 +162,10 @@ def create_pond(body: PondCreate, current_user: dict = Depends(get_current_user)
             )
             row = cur.fetchone()
             conn.commit()
-        except Exception as exc:
+        except Exception:
             conn.rollback()
-            raise HTTPException(status_code=400, detail=str(exc))
+            logger.exception("Pond creation failed")
+            raise HTTPException(status_code=400, detail="Unable to create pond; check the supplied values") from None
     return _clean(row)
 
 
@@ -125,7 +182,8 @@ def get_pond(pond_id: UUID, current_user: dict = Depends(get_current_user), conn
         cur.execute(
             """
             SELECT * FROM shrimp.probe_readings
-            WHERE pond_id = %s ORDER BY recorded_at DESC LIMIT 1
+            WHERE pond_id = %s AND recorded_at <= now() + interval '5 minutes'
+            ORDER BY recorded_at DESC, id DESC LIMIT 1
             """,
             (str(pond_id),),
         )
@@ -194,6 +252,7 @@ def pond_readings(
                    conductivity_us_cm, tds_mg_l, do_mg_l, do_sat_pct, do_temp_c, temp_c
             FROM shrimp.probe_readings
             WHERE pond_id = %s AND recorded_at >= %s
+              AND recorded_at <= now() + interval '5 minutes'
             ORDER BY recorded_at
             """,
             (str(pond_id), since),
@@ -231,12 +290,8 @@ def create_lab_test(
 ):
     pond = get_pond_or_404(conn, str(pond_id))
     require_pond_access(current_user, pond, conn)
+    cycle_id = _lab_cycle_id(conn, pond_id, body)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(
-            "SELECT id FROM shrimp.cycles WHERE pond_id = %s AND status = 'active' LIMIT 1",
-            (str(pond_id),),
-        )
-        cycle = cur.fetchone()
         cur.execute(
             """
             INSERT INTO shrimp.lab_tests (
@@ -247,7 +302,7 @@ def create_lab_test(
             """,
             (
                 str(pond_id),
-                str(cycle["id"]) if cycle else None,
+                str(cycle_id) if cycle_id else None,
                 body.sampled_at,
                 body.no2_ppm, body.nh3_ppm, body.alkalinity_ppm,
                 body.ca_ppm, body.mg_ppm, body.k_ppm, body.notes, current_user["id"],
@@ -256,6 +311,7 @@ def create_lab_test(
         row = dict(cur.fetchone())
     evaluate_lab_test(conn, row)
     conn.commit()
+    flush_notifications(conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT * FROM shrimp.lab_tests WHERE id = %s", (row["id"],))
         saved = cur.fetchone()
@@ -285,11 +341,14 @@ def create_cycle(
     pond = get_pond_or_404(conn, str(pond_id))
     require_pond_access(current_user, pond, conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT id FROM shrimp.ponds WHERE id = %s FOR UPDATE", (str(pond_id),))
         if body.status == "active":
             cur.execute(
-                "UPDATE shrimp.cycles SET status = 'harvested', updated_at = now() WHERE pond_id = %s AND status = 'active'",
+                "SELECT id FROM shrimp.cycles WHERE pond_id = %s AND status = 'active' LIMIT 1",
                 (str(pond_id),),
             )
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail="Close the current cycle before starting another")
         try:
             cur.execute(
                 """
@@ -306,9 +365,10 @@ def create_cycle(
             )
             row = cur.fetchone()
             conn.commit()
-        except Exception as exc:
+        except Exception:
             conn.rollback()
-            raise HTTPException(status_code=400, detail=str(exc))
+            logger.exception("Cycle creation failed")
+            raise HTTPException(status_code=400, detail="Unable to create cycle; check the supplied values") from None
     return _cycle_doc(dict(row))
 
 
@@ -327,14 +387,31 @@ def update_cycle(
     pond = get_pond_or_404(conn, cycle["pond_id"])
     require_pond_access(current_user, pond, conn)
     fields = body.model_dump(exclude_unset=True)
+    if fields.get("status") == "active":
+        if fields.get("harvested_at") is not None:
+            raise HTTPException(status_code=422, detail="An active cycle cannot have a harvest date")
+        fields["harvested_at"] = None
+    elif fields.get("status") in ("harvested", "aborted") and not fields.get("harvested_at"):
+        fields["harvested_at"] = datetime.now(FARM_TIMEZONE).date()
+    elif cycle["status"] == "active" and fields.get("status", "active") == "active" and fields.get("harvested_at") is not None:
+        raise HTTPException(status_code=422, detail="An active cycle cannot have a harvest date")
+    stocked = fields.get("stocked_at", cycle.get("stocked_at"))
+    if fields.get("harvested_at") and stocked and fields["harvested_at"] < stocked:
+        raise HTTPException(status_code=422, detail="Harvest date is before the stocking date")
     if not fields:
         return _cycle_doc(dict(cycle))
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         if fields.get("status") == "active":
             cur.execute(
-                "UPDATE shrimp.cycles SET status = 'harvested', updated_at = now() WHERE pond_id = %s AND status = 'active' AND id <> %s",
+                "SELECT id FROM shrimp.ponds WHERE id = %s FOR UPDATE",
+                (str(cycle["pond_id"]),),
+            )
+            cur.execute(
+                "SELECT id FROM shrimp.cycles WHERE pond_id = %s AND status = 'active' AND id <> %s LIMIT 1",
                 (str(cycle["pond_id"]), str(cycle_id)),
             )
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail="Another cycle is already active for this pond")
         sets = [f"{k} = %s" for k in fields]
         args = list(fields.values()) + [str(cycle_id)]
         cur.execute(
@@ -342,5 +419,19 @@ def update_cycle(
             args,
         )
         row = cur.fetchone()
+        if fields.get("status") == "harvested":
+            cur.execute(
+                """
+                UPDATE shrimp.alert_events SET resolved_at = now()
+                WHERE cycle_id = %s AND resolved_at IS NULL
+                  AND metric NOT IN ('ph', 'do_mg_l', 'heartbeat')
+                """,
+                (str(cycle_id),),
+            )
+        elif fields.get("status") == "active":
+            reevaluate_latest_lab_tests(conn, cycle["pond_id"], cycle_id)
+        elif row["status"] == "active" and {"stage", "sample_avg_weight_g"} & fields.keys():
+            reevaluate_latest_mineral_tests(conn, cycle["pond_id"], cycle_id)
     conn.commit()
+    flush_notifications(conn)
     return _cycle_doc(dict(row))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 import secrets
 
@@ -14,6 +15,7 @@ from models import DeviceActivationCode, DeviceActivationRequest, DeviceCreate, 
 from routers.probe_readings import key_hash
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/{device_id}/ingest-key", response_model=DeviceKeyResponse)
@@ -180,9 +182,10 @@ def create_device(body: DeviceCreate, current_user: dict = Depends(get_current_u
             )
             row = cur.fetchone()
             conn.commit()
-        except Exception as exc:
+        except Exception:
             conn.rollback()
-            raise HTTPException(status_code=400, detail=str(exc))
+            logger.exception("Device creation failed")
+            raise HTTPException(status_code=400, detail="Unable to create device; check the supplied values") from None
     return _clean(row)
 
 

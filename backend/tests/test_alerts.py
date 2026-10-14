@@ -14,9 +14,11 @@ def test_interpolate_exact():
     assert interpolate_nh3(LOOKUP, 10.0, 9.0) == 3.61
 
 
-def test_interpolate_mid():
-    val = interpolate_nh3(LOOKUP, 0.625, 7.7)
-    assert 0.01 < val < 0.04
+def test_interpolate_below_table_uses_lowest_cell():
+    low = interpolate_nh3(LOOKUP, 0.1, 6.5)
+    edge = interpolate_nh3(LOOKUP, 0.25, 7.6)
+    assert low == edge
+    assert interpolate_nh3(LOOKUP, 0, 8) == 0.0
 
 
 def test_10g_by_weight():

@@ -58,7 +58,11 @@ def test_change_password_updates_hash():
         conn,
     )
     assert result == {"ok": True}
-    args = cur.execute.call_args_list[-1].args[1]
+    password_update = next(
+        call for call in cur.execute.call_args_list
+        if "SET password_hash" in call.args[0]
+    )
+    args = password_update.args[1]
     assert auth.verify_password("new-password-1", args[0])
     assert args[1] == user_id
     conn.commit.assert_called_once()

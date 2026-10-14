@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -77,6 +77,19 @@ def test_success_commits_and_returns_stored_receipt(api_client):
 def test_invalid_payload_does_not_write(api_client, changes):
     client, conn, cur = api_client
     response = client.post("/api/probe-readings", json=payload() | changes, headers={"X-Device-Key": "secret"})
+    assert response.status_code == 422
+    cur.execute.assert_not_called()
+    conn.commit.assert_not_called()
+
+
+def test_far_future_reading_is_rejected_before_database_write(api_client):
+    client, conn, cur = api_client
+    future = datetime.now(timezone.utc) + timedelta(minutes=6)
+    response = client.post(
+        "/api/probe-readings",
+        json=payload() | {"recorded_at": future.isoformat()},
+        headers={"X-Device-Key": "secret"},
+    )
     assert response.status_code == 422
     cur.execute.assert_not_called()
     conn.commit.assert_not_called()

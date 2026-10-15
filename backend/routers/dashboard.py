@@ -8,6 +8,7 @@ from psycopg2.extras import RealDictCursor
 from access import visible_pond_filter
 from auth import get_current_user
 from db import get_db
+from water_quality import annotate_probe
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -66,7 +67,7 @@ def dashboard(current_user: dict = Depends(get_current_user), conn=Depends(get_d
             """,
             args,
         )
-        ponds = [_clean(r) for r in cur.fetchall()]
+        ponds = [annotate_probe(_clean(r)) for r in cur.fetchall()]
         cur.execute(
             f"""
             SELECT count(*) FILTER (WHERE ae.resolved_at IS NULL) AS open_count,

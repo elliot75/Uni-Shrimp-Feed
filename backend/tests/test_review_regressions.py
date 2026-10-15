@@ -181,6 +181,7 @@ def test_historical_tan_is_calculated_without_driving_current_alerts():
          patch.object(alerts, "load_lookup", return_value=lookup), \
          patch.object(alerts, "_latest_lab_metrics", return_value={"nh3_ppm": "lab-a"}), \
          patch.object(alerts, "_latest_ph", return_value=8.0), \
+         patch.object(alerts, "_sample_conditions", return_value=None), \
          patch.object(alerts, "upsert_alert") as upsert, \
          patch.object(alerts, "resolve_alert") as resolve:
         alerts.evaluate_lab_test(conn, lab)

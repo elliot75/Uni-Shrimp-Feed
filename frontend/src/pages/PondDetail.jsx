@@ -182,6 +182,13 @@ export default function PondDetail() {
                         </div>
                     )}
                 </div>
+                {pond.diurnal && (
+                    <p className="text-sm text-slate-600 dark:text-slate-300 mb-3">
+                        {tr('diurnalPh')}: {pond.diurnal.delta_ph ?? '—'}
+                        {' · '}
+                        {tr('diurnalDo')}: {pond.diurnal.delta_do ?? '—'}
+                    </p>
+                )}
                 <div className="grid sm:grid-cols-2 gap-4">
                     {PROBE_METRICS.map(({ field, label, unit, color }) => (
                         <div key={field}>
@@ -219,7 +226,7 @@ export default function PondDetail() {
                         <thead className="muted text-left">
                             <tr>
                                 <th className="py-1">{tr('sampledAt')}</th>
-                                <th>NO₂</th><th>{tr('nh3Tan')}</th><th>{tr('nh3Unionized')}</th><th>{tr('alk')}</th><th>Ca</th><th>Mg</th><th>K⁺</th>
+                                <th>NO₂</th><th>{tr('nh3Tan')}</th><th>{tr('nh3Handbook')}</th><th>{tr('nh3TempAdjusted')}</th><th>{tr('alk')}</th><th>Ca</th><th>Mg</th><th>K⁺</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -228,7 +235,14 @@ export default function PondDetail() {
                                     <td className="py-1 whitespace-nowrap">{new Date(row.sampled_at).toLocaleString(user?.locale || 'vi')}</td>
                                     <td>{row.no2_ppm ?? '—'}</td>
                                     <td>{row.nh3_ppm ?? '—'}</td>
-                                    <td>{row.nh3_unionized_ppm ?? '—'}</td>
+                                    <td>{row.nh3_handbook_ppm ?? row.nh3_unionized_ppm ?? '—'}</td>
+                                    <td>
+                                        {row.nh3_outside_handbook
+                                            ? tr('nh3OutsideHandbook')
+                                            : row.nh3_temp_adjusted
+                                                ? row.nh3_emerson_ppm ?? '—'
+                                                : tr('nh3NoTemp')}
+                                    </td>
                                     <td>{row.alkalinity_ppm ?? '—'}</td>
                                     <td>{row.ca_ppm ?? '—'}</td>
                                     <td>{row.mg_ppm ?? '—'}</td>

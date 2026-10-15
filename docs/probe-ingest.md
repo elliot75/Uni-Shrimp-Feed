@@ -148,7 +148,7 @@ postgresql://shrimp_device:${SHRIMP_DEVICE_PASSWORD}@db.example.com:5432/UPVN_SH
 | DO 飽和度 | 0.7 % | `p_do_sat_pct` |
 | DO 水溫（主要水溫） | 26.08 °C | `p_do_temp_c` |
 
-圖中的電導度以顯示值 `26.0 μS/cm` 原樣示範。上傳程式應確認探頭實際輸出單位；若為 mS/cm，必須先乘以 1000 再寫入 `p_conductivity_us_cm`。DO 飽和度寫入百分比讀數，不自行根據 DO 濃度推算或更正。
+圖中的電導度以顯示值 `26.0 μS/cm` 原樣示範。上傳程式應確認探頭實際輸出單位；若為 mS/cm，必須先乘以 1000 再寫入 `p_conductivity_us_cm`。DO 飽和度寫入探頭原始百分比，後端不覆寫；畫面另顯示由溶氧、水溫與鹽度算出的理論飽和度，只用於對照，不作為警報。
 
 ## 範例
 

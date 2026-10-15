@@ -23,6 +23,8 @@ export default function ProbeSummary({ reading, tr }) {
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs muted mt-3">
                 <span>{tr('phProbeTemp')}: {reading?.ph_temp_c ?? '—'} °C</span>
                 <span>{tr('condProbeTemp')}: {reading?.cond_temp_c ?? '—'} °C</span>
+                <span>{tr('doSatTheoretical')}: {reading?.do_sat_theoretical_pct ?? '—'}{reading?.do_sat_theoretical_pct != null && ' %'}</span>
+                {reading?.do_sat_probe_suspect && <span className="text-amber-700 dark:text-amber-400">{tr('doSatSuspect')}</span>}
             </div>
         </div>
     );

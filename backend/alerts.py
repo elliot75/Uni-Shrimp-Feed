@@ -10,6 +10,7 @@ from weakref import WeakKeyDictionary
 from access import farmer_ids_for_salesperson
 from email_service import send_email
 from telegram_service import send_message
+from water_quality import diurnal_swing, outside_handbook, salinity_for_ammonia, unionized_nh3_ppm
 
 NOTIFY_COOLDOWN = timedelta(hours=2)
 STALE_DEFAULT_MINUTES = 60
@@ -408,6 +409,12 @@ def evaluate_probe_reading(conn, reading: dict) -> None:
             elif code == "PH_HIGH":
                 extra_vi = " Theo sổ tay, tăng liều mật đường."
                 extra_zh = " 手冊建議增加糖蜜用量。"
+            if code.startswith("PH"):
+                swing = _today_swing(conn, pond["id"])
+                if swing and swing.get("delta_ph") is not None:
+                    delta = swing["delta_ph"]
+                    extra_vi += f" Biên độ pH trong ngày {delta:+.2f}."
+                    extra_zh += f" 今日 pH 波動 {delta:+.2f}。"
             threshold = rule.get("min_value" if "LOW" in code or code == "DO_CRITICAL" else "max_value")
             vi, zh = _msg(code, value, extra_vi, extra_zh, threshold)
             upsert_alert(conn, pond, cycle, rule, value, vi, zh)
@@ -468,6 +475,66 @@ def _latest_ph(conn, pond_id, sampled_at=None, cycle_id=None) -> float | None:
         )
         row = cur.fetchone()
         return _num(row["ph"]) if row else None
+
+
+def _sample_conditions(conn, pond_id, sampled_at, cycle_id) -> dict | None:
+    """DO-probe temperature and salinity within an hour before the sample."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT do_temp_c, salinity_ppt
+            FROM shrimp.probe_readings
+            WHERE pond_id = %s
+              AND cycle_id IS NOT DISTINCT FROM %s
+              AND recorded_at <= now() + interval '5 minutes'
+              AND (%s IS NULL OR recorded_at <= %s)
+              AND (%s IS NULL OR recorded_at >= %s - interval '60 minutes')
+              AND (do_temp_c IS NOT NULL OR salinity_ppt IS NOT NULL)
+            ORDER BY recorded_at DESC, id DESC
+            LIMIT 1
+            """,
+            (pond_id, cycle_id, sampled_at, sampled_at, sampled_at, sampled_at),
+        )
+        row = cur.fetchone()
+    if not row or not isinstance(row, dict):
+        return None
+    return {"temp_c": _num(row.get("do_temp_c")), "salinity_ppt": _num(row.get("salinity_ppt"))}
+
+
+def _today_swing(conn, pond_id) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT recorded_at, ph, do_mg_l
+            FROM shrimp.probe_readings
+            WHERE pond_id = %s
+              AND recorded_at <= now() + interval '5 minutes'
+              AND (recorded_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+                  = (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+            ORDER BY recorded_at
+            """,
+            (pond_id,),
+        )
+        rows = cur.fetchall()
+    if not isinstance(rows, list):
+        return None
+    return diurnal_swing(rows)
+
+
+def _nh3_note(temp_used: bool, salinity_used: bool, outside: bool, emerson) -> tuple[str, str]:
+    if outside:
+        if emerson is None:
+            return (" Ngoài phạm vi bảng sổ tay.", " 超出手冊表格範圍。")
+        shown = f"{emerson:.3f}"
+        return (
+            f" Ngoài phạm vi bảng sổ tay. Ước tính theo nhiệt độ {shown} ppm, không dùng làm ngưỡng.",
+            f" 超出手冊表格範圍。水溫估算 {shown} ppm，不作為閾值。",
+        )
+    if temp_used and salinity_used:
+        return (" Đã hiệu chỉnh theo nhiệt độ và độ mặn.", " 已依水溫與鹽度修正。")
+    if temp_used:
+        return (" Đã hiệu chỉnh theo nhiệt độ; chưa có độ mặn.", " 已依水溫修正，未計鹽度。")
+    return (" Chưa hiệu chỉnh nhiệt độ.", " 未作水溫修正。")
 
 
 def consecutive_no2_days(conn, pond_id, threshold: float, cycle_id=None) -> int:
@@ -612,32 +679,51 @@ def evaluate_lab_test(conn, lab: dict) -> None:
     tan = _num(lab.get("nh3_ppm"))
     tan_is_current = current("nh3_ppm")
     ph = _latest_ph(conn, pond["id"], lab.get("sampled_at"), lab_cycle_id)
+    conditions = _sample_conditions(conn, pond["id"], lab.get("sampled_at"), lab_cycle_id)
     if tan is not None:
-        unionized = interpolate_nh3(lookup, tan, ph) if ph is not None and lookup else None
+        handbook = interpolate_nh3(lookup, tan, ph) if ph is not None and lookup else None
+        beyond_table = outside_handbook(lookup, tan, ph)
+        emerson = None
+        temp_used = False
+        salinity_used = False
+        if ph is not None and conditions and conditions.get("temp_c") is not None:
+            salinity = salinity_for_ammonia(conditions.get("salinity_ppt"))
+            emerson = unionized_nh3_ppm(tan, ph, conditions["temp_c"], salinity)
+            temp_used = emerson is not None
+            salinity_used = temp_used and salinity is not None
+        if beyond_table or handbook is None:
+            alert_value = None
+        elif temp_used:
+            alert_value = emerson
+        else:
+            alert_value = handbook
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE shrimp.lab_tests SET nh3_unionized_ppm = %s WHERE id = %s",
-                (unionized, lab["id"]),
+                (alert_value, lab["id"]),
             )
         if tan_is_current:
-            if unionized is None:
-                handle("NH3_OUT_OF_RANGE", True, None)
+            if alert_value is None:
+                extra = _nh3_note(False, False, True, emerson) if beyond_table else ("", "")
+                handle("NH3_OUT_OF_RANGE", True, None, extra)
                 resolve_alert(conn, pond["id"], "NH3_WARN")
                 resolve_alert(conn, pond["id"], "NH3_DANGER")
             else:
                 handle("NH3_OUT_OF_RANGE", False, None)
+                note_vi, note_zh = _nh3_note(temp_used, salinity_used, False, None)
                 danger = rules.get("NH3_DANGER")
                 warn = rules.get("NH3_WARN")
                 pct = water_change_pct(cycle if cycle else {"stage": stage})
-                change = (f" Nên thay nước {pct}%.", f" 建議換水 {pct}%。")
+                change = (f" Nên thay nước {pct}%.{note_vi}", f" 建議換水 {pct}%。{note_zh}")
+                plain = (note_vi, note_zh)
                 if danger:
-                    firing = unionized >= _num(danger["max_value"])
-                    handle("NH3_DANGER", firing, unionized, change if firing else ("", ""))
+                    firing = alert_value >= _num(danger["max_value"])
+                    handle("NH3_DANGER", firing, alert_value, change if firing else plain)
                 if warn:
-                    firing = unionized >= _num(warn["max_value"]) and not (
-                        danger and unionized >= _num(danger["max_value"])
+                    firing = alert_value >= _num(warn["max_value"]) and not (
+                        danger and alert_value >= _num(danger["max_value"])
                     )
-                    handle("NH3_WARN", firing, unionized)
+                    handle("NH3_WARN", firing, alert_value, plain)
 
     potassium = _num(lab.get("k_ppm")) if current("k_ppm") else None
     if potassium is not None and rules.get("K_LOW"):

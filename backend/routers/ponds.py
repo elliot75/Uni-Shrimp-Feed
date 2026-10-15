@@ -12,12 +12,15 @@ from access import get_pond_or_404, require_farmer_access, require_pond_access, 
 from alerts import (
     evaluate_lab_test,
     flush_notifications,
+    interpolate_nh3,
+    load_lookup,
     reevaluate_latest_lab_tests,
     reevaluate_latest_mineral_tests,
 )
 from auth import get_current_user
 from db import get_db
 from models import CycleCreate, CycleUpdate, LabTestCreate, PondCreate, PondUpdate
+from water_quality import annotate_probe, diurnal_swing, outside_handbook, unionized_nh3_ppm
 
 router = APIRouter(prefix="/api", tags=["ponds"])
 logger = logging.getLogger(__name__)
@@ -72,6 +75,38 @@ def _lab_cycle_id(conn, pond_id, body: LabTestCreate):
             return undated[0]["id"]
         raise HTTPException(status_code=422, detail="Cycle dates are missing; select the sample's cycle")
     return None
+
+
+def _pond_diurnal(conn, pond_id):
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT recorded_at, ph, do_mg_l
+            FROM shrimp.probe_readings
+            WHERE pond_id = %s
+              AND recorded_at <= now() + interval '5 minutes'
+              AND (recorded_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+                  = (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+            ORDER BY recorded_at
+            """,
+            (str(pond_id),),
+        )
+        rows = cur.fetchall()
+    return diurnal_swing(rows)
+
+
+def _explain_nh3(row: dict, lookup: list) -> dict:
+    tan = row.get("nh3_ppm")
+    ph = row.get("sample_ph")
+    temp = row.get("sample_temp_c")
+    salinity = row.get("sample_salinity_ppt")
+    handbook = interpolate_nh3(lookup, tan, ph) if ph is not None and lookup and tan is not None else None
+    emerson = unionized_nh3_ppm(tan, ph, temp, salinity) if temp is not None else None
+    row["nh3_handbook_ppm"] = None if handbook is None else round(handbook, 4)
+    row["nh3_emerson_ppm"] = None if emerson is None else round(emerson, 4)
+    row["nh3_outside_handbook"] = outside_handbook(lookup, tan, ph)
+    row["nh3_temp_adjusted"] = emerson is not None
+    return row
 
 
 def _clean(row) -> dict:
@@ -208,6 +243,8 @@ def get_pond(pond_id: UUID, current_user: dict = Depends(get_current_user), conn
     item["latest_reading"] = _clean(latest) if latest else None
     item["open_alerts"] = [_clean(a) for a in alerts]
     item["devices"] = [_clean(d) for d in devices]
+    item["latest_reading"] = annotate_probe(item["latest_reading"])
+    item["diurnal"] = _pond_diurnal(conn, pond_id)
     return item
 
 
@@ -258,7 +295,7 @@ def pond_readings(
             (str(pond_id), since),
         )
         rows = cur.fetchall()
-    return [_clean(r) for r in rows]
+    return [annotate_probe(_clean(r)) for r in rows]
 
 
 @router.get("/ponds/{pond_id}/lab-tests")
@@ -268,9 +305,21 @@ def list_lab_tests(pond_id: UUID, current_user: dict = Depends(get_current_user)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT lt.*, u.display_name AS recorded_by_name
+            SELECT lt.*, u.display_name AS recorded_by_name,
+                   sample.sample_temp_c, sample.sample_salinity_ppt, sample.sample_ph
             FROM shrimp.lab_tests lt
             LEFT JOIN shrimp.users u ON u.id = lt.recorded_by
+            LEFT JOIN LATERAL (
+                SELECT do_temp_c AS sample_temp_c, salinity_ppt AS sample_salinity_ppt, ph AS sample_ph
+                FROM shrimp.probe_readings pr
+                WHERE pr.pond_id = lt.pond_id
+                  AND pr.cycle_id IS NOT DISTINCT FROM lt.cycle_id
+                  AND pr.recorded_at <= lt.sampled_at
+                  AND pr.recorded_at >= lt.sampled_at - interval '60 minutes'
+                  AND pr.recorded_at <= now() + interval '5 minutes'
+                ORDER BY pr.recorded_at DESC, pr.id DESC
+                LIMIT 1
+            ) sample ON true
             WHERE lt.pond_id = %s
             ORDER BY lt.sampled_at DESC
             LIMIT 200
@@ -278,7 +327,8 @@ def list_lab_tests(pond_id: UUID, current_user: dict = Depends(get_current_user)
             (str(pond_id),),
         )
         rows = cur.fetchall()
-    return [_clean(r) for r in rows]
+    lookup = load_lookup(conn)
+    return [_explain_nh3(_clean(r), lookup) for r in rows]
 
 
 @router.post("/ponds/{pond_id}/lab-tests")

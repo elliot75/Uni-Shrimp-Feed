@@ -43,3 +43,14 @@ cd backend && pytest -q tests/test_alerts.py tests/test_review_regressions.py
 ```
 
 `tests/test_sensor_readings.py` 檢查完整感測資料與 DO 水溫規則，使用唯一測試資料並在交易結束後回滾，不會刪除既有設備或讀數。
+
+NH₃ 警報、檢驗 API 與 React 顯示的完整回歸測試使用 **記憶體內的 PGlite PostgreSQL 引擎**，不啟動資料庫伺服器、不讀取正式資料，也會禁止 `psycopg2.connect`。先從專案根目錄安裝測試依賴，再執行：
+
+```bash
+npm ci
+npm --prefix frontend ci
+cd backend
+SKIP_WORKER=1 pytest -q tests/test_alerts.py tests/test_review_regressions.py tests/test_water_quality.py tests/test_password.py tests/test_nh3_flow.py
+```
+
+PGlite 只列在根目錄的開發依賴，不加入正式後端或前端映像。這組測試執行實際的 PostgreSQL 取樣查詢、警報評估、FastAPI 路由及 React 靜態渲染；不取代正式 PostgreSQL 的負載／併發測試。取樣與判定契約見 [docs/probe-ingest.md](docs/probe-ingest.md#檢驗-nh₃-的取樣與判定)。

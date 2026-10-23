@@ -143,7 +143,6 @@ def test_harvest_rule_is_independent_of_no2_warning():
     with patch.object(alerts, "load_pond", return_value={"id": "pond-a", "pond_type": "growout"}), \
          patch.object(alerts, "load_active_cycle", return_value=None), \
          patch.object(alerts, "load_lookup", return_value=[]), \
-         patch.object(alerts, "_latest_ph", return_value=None), \
          patch.object(alerts, "_latest_lab_metrics", return_value={"no2_ppm": "lab-a"}), \
          patch.object(alerts, "load_rules", return_value={rule["code"]: rule}), \
          patch.object(alerts, "consecutive_no2_days", return_value=7) as streak, \
@@ -180,8 +179,9 @@ def test_historical_tan_is_calculated_without_driving_current_alerts():
          patch.object(alerts, "load_rules", return_value={"NH3_DANGER": {"code": "NH3_DANGER", "max_value": 0.2}}), \
          patch.object(alerts, "load_lookup", return_value=lookup), \
          patch.object(alerts, "_latest_lab_metrics", return_value={"nh3_ppm": "lab-a"}), \
-         patch.object(alerts, "_latest_ph", return_value=8.0), \
-         patch.object(alerts, "_sample_conditions", return_value=None), \
+         patch.object(alerts, "load_sample_conditions", return_value={
+             "sample_ph": 8.0, "sample_temp_c": None, "sample_salinity_ppt": None,
+         }), \
          patch.object(alerts, "upsert_alert") as upsert, \
          patch.object(alerts, "resolve_alert") as resolve:
         alerts.evaluate_lab_test(conn, lab)

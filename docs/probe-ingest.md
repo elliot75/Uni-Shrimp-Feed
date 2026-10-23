@@ -133,6 +133,22 @@ postgresql://shrimp_device:${SHRIMP_DEVICE_PASSWORD}@db.example.com:5432/UPVN_SH
 - 設備 IP、RSSI、mDNS 主機名與其他附加資訊放 `p_raw` jsonb，例如 `{"ip": "192.168.105.164", "rssi_dbm": -56, "hostname": "shrimp-235164.local"}`。
 - ESP32 本機網頁每 5 秒更新與資料庫上傳頻率分開設定；既有資料庫上傳頻率維持每 30 分鐘。
 
+## 檢驗 NH₃ 的取樣與判定
+
+警報評估與 `GET /api/ponds/{pond_id}/lab-tests` 共用 `backend/lab_samples.py` 的取樣查詢，以及 `water_quality.assess_nh3` 的判定。前端送出檢驗後會重新載入此列表，不自行計算 NH₃。
+
+- 以檢驗的 `sampled_at` 為基準，選取 **同池、相同已儲存 `cycle_id`** 的探頭資料；未指派週期的檢驗只可匹配 `cycle_id IS NULL` 的讀數，不借用其他週期。週期指派仍依 `Asia/Ho_Chi_Minh` 日期處理。
+- pH、DO 水溫與鹽度**各自**選取 `[sampled_at − 60 分鐘, sampled_at]` 內最新非空值，兩端都包含；不使用採樣之後的讀數，並保留 `recorded_at <= now() + 5 分鐘` 的時鐘容許限制。同時間以較大的讀數 `id` 決定。缺少採樣時間時不進行無限期回溯。
+- 三個欄位可以來自不同時間／設備，但必須符合相同池、週期與時窗。API 的 `sample_ph`、`sample_temp_c`、`sample_salinity_ppt` 各有對應的 `*_recorded_at`；前端計算欄的提示會顯示來源值與時間。
+- 只使用 `do_temp_c`，不借用 pH／電導探頭水溫，也不改寫原始紀錄。先選最新非空值，再套用公式安全限制；最新值超出公式範圍時，不再偷偷改用更早的範圍內數值。
+- 保留現有公式與手冊規則：DO 水溫可修正範圍為 0–40°C；鹽度修正只接受 `0 < salinity_ppt <= 45`，其餘使用淡水公式。沒有可用水溫時用手冊值；TAN／pH 高於手冊上限時不得用公式取代手冊的範圍限制。低於手冊下界仍使用最低格值，不向外插值。
+- 缺少 pH 或手冊表、或超出手冊上界時，判定值為 `null`，由既有 `NH3_OUT_OF_RANGE` 規則處理；水溫估算若存在只能供參考。原有警告／危險閾值及換水建議維持不變，閾值比較使用未四捨五入的值。
+- `nh3_handbook_ppm` 是手冊值、`nh3_emerson_ppm` 是公式估算、`nh3_unionized_ppm` 是通過手冊範圍限制後的判定值。列表依目前可用讀數重新計算這些欄位，不用舊的儲存值補缺，也不在 GET 時寫入資料庫。顯示四捨五入至小數四位，接近閾值時以警報的未取整比較結果為準。
+- `nh3_status` 區分 `missing_tan`、`missing_ph`、`missing_lookup`、`outside_handbook`、`temperature_adjusted`、`handbook`。`nh3_temp_adjusted`／`nh3_salinity_adjusted` 表示公式估算是否使用水溫／鹽度，不代表已通過手冊範圍限制。
+- pH、DO 水溫或鹽度任一非空的探頭補傳，皆會重新評估其後 60 分鐘內、同池同週期的 TAN 檢驗。歷史檢驗仍可更新衍生值，但只有當前週期的最新 TAN 檢驗會驅動當前 NH₃ 警報。
+
+這項變更不需要資料庫遷移或重寫探頭資料。既有已處理的警報不會在部署時全量重算；列表立即使用新規則，儲存衍生值及警報則在相關資料重新評估後更新。探頭上傳與警報 worker 仍有原本的非同步處理時間。DO 理論飽和度與每日 pH 分析保持原有行為。
+
 ## 欄位對照（你現有探頭輸出）
 
 | 探頭 | 範例 | 函數參數 |

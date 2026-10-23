@@ -40,6 +40,9 @@ def test_salinity_lowers_unionized_fraction():
 
 def test_temperature_outside_range_is_not_adjusted():
     assert unionized_nh3_ppm(1, 8, 45, 15) is None
+    # Zero TAN remains zero via the handbook, but must not claim a temperature
+    # correction from a reading outside the formula's supported range.
+    assert unionized_nh3_ppm(0, 8, 45, 15) is None
 
 
 def test_diurnal_swing_requires_dense_windows():

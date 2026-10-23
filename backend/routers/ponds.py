@@ -12,15 +12,15 @@ from access import get_pond_or_404, require_farmer_access, require_pond_access, 
 from alerts import (
     evaluate_lab_test,
     flush_notifications,
-    interpolate_nh3,
     load_lookup,
     reevaluate_latest_lab_tests,
     reevaluate_latest_mineral_tests,
 )
 from auth import get_current_user
 from db import get_db
+from lab_samples import SAMPLE_CONDITIONS_COLUMNS, SAMPLE_CONDITIONS_JOIN
 from models import CycleCreate, CycleUpdate, LabTestCreate, PondCreate, PondUpdate
-from water_quality import annotate_probe, diurnal_swing, outside_handbook, unionized_nh3_ppm
+from water_quality import annotate_probe, assess_nh3, diurnal_swing
 
 router = APIRouter(prefix="/api", tags=["ponds"])
 logger = logging.getLogger(__name__)
@@ -96,16 +96,16 @@ def _pond_diurnal(conn, pond_id):
 
 
 def _explain_nh3(row: dict, lookup: list) -> dict:
-    tan = row.get("nh3_ppm")
-    ph = row.get("sample_ph")
-    temp = row.get("sample_temp_c")
-    salinity = row.get("sample_salinity_ppt")
-    handbook = interpolate_nh3(lookup, tan, ph) if ph is not None and lookup and tan is not None else None
-    emerson = unionized_nh3_ppm(tan, ph, temp, salinity) if temp is not None else None
-    row["nh3_handbook_ppm"] = None if handbook is None else round(handbook, 4)
-    row["nh3_emerson_ppm"] = None if emerson is None else round(emerson, 4)
-    row["nh3_outside_handbook"] = outside_handbook(lookup, tan, ph)
-    row["nh3_temp_adjusted"] = emerson is not None
+    assessment = assess_nh3(
+        lookup, row.get("nh3_ppm"), row.get("sample_ph"),
+        row.get("sample_temp_c"), row.get("sample_salinity_ppt"),
+    )
+    # Refresh the legacy stored value in the response, without writing on GET.
+    # Compare thresholds at full precision; round only the display fields.
+    row.update(assessment)
+    for field in ("nh3_handbook_ppm", "nh3_emerson_ppm", "nh3_unionized_ppm"):
+        value = row[field]
+        row[field] = None if value is None else round(value, 4)
     return row
 
 
@@ -304,22 +304,12 @@ def list_lab_tests(pond_id: UUID, current_user: dict = Depends(get_current_user)
     require_pond_access(current_user, pond, conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
-            """
+            f"""
             SELECT lt.*, u.display_name AS recorded_by_name,
-                   sample.sample_temp_c, sample.sample_salinity_ppt, sample.sample_ph
+                   {SAMPLE_CONDITIONS_COLUMNS}
             FROM shrimp.lab_tests lt
             LEFT JOIN shrimp.users u ON u.id = lt.recorded_by
-            LEFT JOIN LATERAL (
-                SELECT do_temp_c AS sample_temp_c, salinity_ppt AS sample_salinity_ppt, ph AS sample_ph
-                FROM shrimp.probe_readings pr
-                WHERE pr.pond_id = lt.pond_id
-                  AND pr.cycle_id IS NOT DISTINCT FROM lt.cycle_id
-                  AND pr.recorded_at <= lt.sampled_at
-                  AND pr.recorded_at >= lt.sampled_at - interval '60 minutes'
-                  AND pr.recorded_at <= now() + interval '5 minutes'
-                ORDER BY pr.recorded_at DESC, pr.id DESC
-                LIMIT 1
-            ) sample ON true
+            {SAMPLE_CONDITIONS_JOIN}
             WHERE lt.pond_id = %s
             ORDER BY lt.sampled_at DESC
             LIMIT 200

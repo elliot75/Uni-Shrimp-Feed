@@ -10,7 +10,8 @@ from weakref import WeakKeyDictionary
 from access import farmer_ids_for_salesperson
 from email_service import send_email
 from telegram_service import send_message
-from water_quality import diurnal_swing, outside_handbook, salinity_for_ammonia, unionized_nh3_ppm
+from lab_samples import load_sample_conditions
+from water_quality import assess_nh3, diurnal_swing, interpolate_nh3
 
 NOTIFY_COOLDOWN = timedelta(hours=2)
 STALE_DEFAULT_MINUTES = 60
@@ -41,45 +42,6 @@ def water_change_pct(cycle: dict | None) -> int:
     if cycle and cycle.get("stage") == "nursery":
         return 20
     return 40
-
-
-def interpolate_nh3(lookup: list[dict], tan: float, ph: float) -> float | None:
-    """Bilinear interpolation on handbook TAN x pH table.
-
-    Values below the table are safer than the lowest cell, so they use that cell.
-    Only TAN or pH above the table is undetermined.
-    """
-    if not lookup or tan is None or ph is None:
-        return None
-    if tan <= 0:
-        return 0.0
-    tans = sorted({float(r["tan_ppm"]) for r in lookup})
-    phs = sorted({float(r["ph"]) for r in lookup})
-    if tan > tans[-1] or ph > phs[-1]:
-        return None
-    tan = max(float(tan), tans[0])
-    ph = max(float(ph), phs[0])
-    grid = {(float(r["tan_ppm"]), float(r["ph"])): float(r["nh3_ppm"]) for r in lookup}
-
-    def clamp_pair(values, x):
-        if x <= values[0]:
-            return values[0], values[0]
-        if x >= values[-1]:
-            return values[-1], values[-1]
-        for i in range(len(values) - 1):
-            if values[i] <= x <= values[i + 1]:
-                return values[i], values[i + 1]
-        return values[-1], values[-1]
-
-    t0, t1 = clamp_pair(tans, tan)
-    p0, p1 = clamp_pair(phs, ph)
-    q00 = grid[(t0, p0)]
-    q01 = grid[(t0, p1)]
-    q10 = grid[(t1, p0)]
-    q11 = grid[(t1, p1)]
-    td = 0.0 if t1 == t0 else (tan - t0) / (t1 - t0)
-    pd = 0.0 if p1 == p0 else (ph - p0) / (p1 - p0)
-    return (q00 * (1 - td) * (1 - pd) + q10 * td * (1 - pd) + q01 * (1 - td) * pd + q11 * td * pd)
 
 
 def load_rules(conn) -> dict[str, dict]:
@@ -432,7 +394,7 @@ def evaluate_probe_reading(conn, reading: dict) -> None:
         low = rules.get("DO_LOW")
         handle("DO_CRITICAL", bool(crit) and do_v < _num(crit["min_value"]), do_v)
         handle("DO_LOW", bool(low) and do_v < _num(low["min_value"]) and not (crit and do_v < _num(crit["min_value"])), do_v)
-    if ph is not None:
+    if any(reading.get(field) is not None for field in ("ph", "do_temp_c", "salinity_ppt")):
         reevaluate_tan_for_probe(conn, reading)
     with conn.cursor() as cur:
         cur.execute(
@@ -457,48 +419,6 @@ def _latest_probe_metrics(conn, pond_id) -> dict:
         )
         row = cur.fetchone()
         return dict(row) if row else {"ph": None, "do_mg_l": None}
-
-
-def _latest_ph(conn, pond_id, sampled_at=None, cycle_id=None) -> float | None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT ph FROM shrimp.probe_readings
-            WHERE pond_id = %s AND ph IS NOT NULL
-              AND cycle_id IS NOT DISTINCT FROM %s
-              AND recorded_at <= now() + interval '5 minutes'
-              AND (%s IS NULL OR recorded_at <= %s)
-              AND (%s IS NULL OR recorded_at >= %s - interval '60 minutes')
-            ORDER BY recorded_at DESC, id DESC LIMIT 1
-            """,
-            (pond_id, cycle_id, sampled_at, sampled_at, sampled_at, sampled_at),
-        )
-        row = cur.fetchone()
-        return _num(row["ph"]) if row else None
-
-
-def _sample_conditions(conn, pond_id, sampled_at, cycle_id) -> dict | None:
-    """DO-probe temperature and salinity within an hour before the sample."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT do_temp_c, salinity_ppt
-            FROM shrimp.probe_readings
-            WHERE pond_id = %s
-              AND cycle_id IS NOT DISTINCT FROM %s
-              AND recorded_at <= now() + interval '5 minutes'
-              AND (%s IS NULL OR recorded_at <= %s)
-              AND (%s IS NULL OR recorded_at >= %s - interval '60 minutes')
-              AND (do_temp_c IS NOT NULL OR salinity_ppt IS NOT NULL)
-            ORDER BY recorded_at DESC, id DESC
-            LIMIT 1
-            """,
-            (pond_id, cycle_id, sampled_at, sampled_at, sampled_at, sampled_at),
-        )
-        row = cur.fetchone()
-    if not row or not isinstance(row, dict):
-        return None
-    return {"temp_c": _num(row.get("do_temp_c")), "salinity_ppt": _num(row.get("salinity_ppt"))}
 
 
 def _today_swing(conn, pond_id) -> dict | None:
@@ -678,25 +598,17 @@ def evaluate_lab_test(conn, lab: dict) -> None:
 
     tan = _num(lab.get("nh3_ppm"))
     tan_is_current = current("nh3_ppm")
-    ph = _latest_ph(conn, pond["id"], lab.get("sampled_at"), lab_cycle_id)
-    conditions = _sample_conditions(conn, pond["id"], lab.get("sampled_at"), lab_cycle_id)
     if tan is not None:
-        handbook = interpolate_nh3(lookup, tan, ph) if ph is not None and lookup else None
-        beyond_table = outside_handbook(lookup, tan, ph)
-        emerson = None
-        temp_used = False
-        salinity_used = False
-        if ph is not None and conditions and conditions.get("temp_c") is not None:
-            salinity = salinity_for_ammonia(conditions.get("salinity_ppt"))
-            emerson = unionized_nh3_ppm(tan, ph, conditions["temp_c"], salinity)
-            temp_used = emerson is not None
-            salinity_used = temp_used and salinity is not None
-        if beyond_table or handbook is None:
-            alert_value = None
-        elif temp_used:
-            alert_value = emerson
-        else:
-            alert_value = handbook
+        conditions = load_sample_conditions(conn, pond["id"], lab.get("sampled_at"), lab_cycle_id)
+        assessment = assess_nh3(
+            lookup, tan, conditions["sample_ph"], conditions["sample_temp_c"],
+            conditions["sample_salinity_ppt"],
+        )
+        alert_value = assessment["nh3_unionized_ppm"]
+        beyond_table = assessment["nh3_outside_handbook"]
+        emerson = assessment["nh3_emerson_ppm"]
+        temp_used = assessment["nh3_temp_adjusted"]
+        salinity_used = assessment["nh3_salinity_adjusted"]
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE shrimp.lab_tests SET nh3_unionized_ppm = %s WHERE id = %s",
@@ -731,7 +643,7 @@ def evaluate_lab_test(conn, lab: dict) -> None:
 
 
 def reevaluate_tan_for_probe(conn, reading) -> None:
-    # Even an older probe can supply the missing pH for a historical sample.
+    # A backfilled pH, DO temperature or salinity can change a historical sample.
     with conn.cursor() as cur:
         cur.execute(
             """

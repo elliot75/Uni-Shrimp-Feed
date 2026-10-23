@@ -5,5 +5,8 @@
     "init-db": "python3 scripts/init_db.py",
     "dev:backend": "cd backend && uvicorn main:app --reload --port 8001",
     "dev:frontend": "npm --prefix frontend run dev"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.11"
   }
 }

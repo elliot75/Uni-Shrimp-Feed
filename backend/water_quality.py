@@ -38,6 +38,45 @@ def _num(value) -> float | None:
     return number
 
 
+def interpolate_nh3(lookup: list[dict], tan: float, ph: float) -> float | None:
+    """Bilinear interpolation on handbook TAN x pH table.
+
+    Values below the table are safer than the lowest cell, so they use that cell.
+    Only TAN or pH above the table is undetermined.
+    """
+    if not lookup or tan is None or ph is None:
+        return None
+    if tan <= 0:
+        return 0.0
+    tans = sorted({float(r["tan_ppm"]) for r in lookup})
+    phs = sorted({float(r["ph"]) for r in lookup})
+    if tan > tans[-1] or ph > phs[-1]:
+        return None
+    tan = max(float(tan), tans[0])
+    ph = max(float(ph), phs[0])
+    grid = {(float(r["tan_ppm"]), float(r["ph"])): float(r["nh3_ppm"]) for r in lookup}
+
+    def clamp_pair(values, x):
+        if x <= values[0]:
+            return values[0], values[0]
+        if x >= values[-1]:
+            return values[-1], values[-1]
+        for i in range(len(values) - 1):
+            if values[i] <= x <= values[i + 1]:
+                return values[i], values[i + 1]
+        return values[-1], values[-1]
+
+    t0, t1 = clamp_pair(tans, tan)
+    p0, p1 = clamp_pair(phs, ph)
+    q00 = grid[(t0, p0)]
+    q01 = grid[(t0, p1)]
+    q10 = grid[(t1, p0)]
+    q11 = grid[(t1, p1)]
+    td = 0.0 if t1 == t0 else (tan - t0) / (t1 - t0)
+    pd = 0.0 if p1 == p0 else (ph - p0) / (p1 - p0)
+    return (q00 * (1 - td) * (1 - pd) + q10 * td * (1 - pd) + q01 * (1 - td) * pd + q11 * td * pd)
+
+
 def handbook_upper_bounds(lookup: list[dict]) -> tuple[float, float] | None:
     if not lookup:
         return None
@@ -87,13 +126,51 @@ def unionized_nh3_ppm(tan_ppm, ph, temp_c, salinity_ppt=None) -> float | None:
     temperature = _num(temp_c)
     if tan is None or acidity is None or temperature is None or tan < 0:
         return None
-    if tan == 0:
-        return 0.0
     pka = ammonia_pka(temperature, salinity_ppt)
     if pka is None:
         return None
+    if tan == 0:
+        return 0.0
     fraction = 1.0 / (1.0 + 10 ** (pka - acidity))
     return tan * fraction
+
+
+def assess_nh3(lookup, tan, ph, temp_c=None, salinity_ppt=None) -> dict:
+    """One unrounded assessment for alerts and display; handbook remains the gate.
+
+    Formula estimates outside the table are reference-only. Invalid/missing DO
+    temperature falls back to the handbook; invalid salinity uses freshwater.
+    Neither caller may replace an unavailable result with a previously saved one.
+    """
+    tan, ph = _num(tan), _num(ph)
+    handbook = interpolate_nh3(lookup, tan, ph)
+    salinity = salinity_for_ammonia(salinity_ppt)
+    emerson = unionized_nh3_ppm(tan, ph, temp_c, salinity)
+    outside = outside_handbook(lookup, tan, ph)
+    value = None
+    if tan is None:
+        status = "missing_tan"
+    elif ph is None:
+        status = "missing_ph"
+    elif outside:
+        status = "outside_handbook"
+    elif handbook is None:
+        status = "missing_lookup"
+    elif emerson is not None:
+        status = "temperature_adjusted"
+        value = emerson
+    else:
+        status = "handbook"
+        value = handbook
+    return {
+        "nh3_handbook_ppm": handbook,
+        "nh3_emerson_ppm": emerson,
+        "nh3_unionized_ppm": value,
+        "nh3_outside_handbook": outside,
+        "nh3_temp_adjusted": emerson is not None,
+        "nh3_salinity_adjusted": emerson is not None and salinity is not None,
+        "nh3_status": status,
+    }
 
 
 def oxygen_solubility_mg_l(temp_c, salinity_ppt=None) -> float | None:

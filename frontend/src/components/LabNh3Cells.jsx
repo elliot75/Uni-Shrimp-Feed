@@ -1,6 +1,8 @@
+import { formatFarmTime } from '../utils/time';
+
 // The API owns NH3 selection, calculation and the handbook range gate.
 // Never fall back to a saved alert value in the handbook column.
-export default function LabNh3Cells({ row, tr }) {
+export default function LabNh3Cells({ row, tr, locale = 'vi' }) {
     const missing = {
         missing_tan: '—',
         missing_ph: tr('nh3NoPh'),
@@ -12,7 +14,7 @@ export default function LabNh3Cells({ row, tr }) {
         ['sample_temp_c', tr('temp'), ' °C'],
         ['sample_salinity_ppt', tr('salinity'), ' ppt'],
     ].filter(([field]) => row[field] != null).map(([field, label, unit]) => (
-        `${label}: ${row[field]}${unit} (${row[`${field}_recorded_at`] || '—'})`
+        `${label}: ${row[field]}${unit} (${formatFarmTime(row[`${field}_recorded_at`], locale)})`
     )).join('\n');
     const estimate = row.nh3_status === 'missing_tan' || row.nh3_status === 'missing_ph'
         ? missing[row.nh3_status]

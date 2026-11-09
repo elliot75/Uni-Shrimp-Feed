@@ -110,6 +110,12 @@ def update_rule(rule_id: UUID, body: AlertRuleUpdate, admin: dict = Depends(requ
             args,
         )
         row = cur.fetchone()
+        if fields.get("is_active") is False:
+            cur.execute(
+                "UPDATE shrimp.alert_events SET resolved_at = now() "
+                "WHERE rule_code = %s AND resolved_at IS NULL",
+                (code,),
+            )
     if not row:
         raise HTTPException(status_code=404, detail="Rule not found")
     conn.commit()

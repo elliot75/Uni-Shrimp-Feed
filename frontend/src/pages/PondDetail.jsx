@@ -6,6 +6,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { t } from '../i18n';
 import Spark from '../components/Spark';
 import ProbeSummary, { PROBE_METRICS } from '../components/ProbeSummary';
+import CycleManager from '../components/CycleManager';
+import { farmDateTimeInput, farmInputToIso, formatFarmTime } from '../utils/time';
 
 export default function PondDetail() {
     const { id } = useParams();
@@ -19,14 +21,7 @@ export default function PondDetail() {
     const [showLab, setShowLab] = useState(false);
     const [labError, setLabError] = useState('');
     const [labSaving, setLabSaving] = useState(false);
-    const [cycleWeight, setCycleWeight] = useState('');
-    const [harvestedAt, setHarvestedAt] = useState('');
-    const [labForm, setLabForm] = useState(() => {
-        const now = new Date();
-        const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
-        return { sampled_at: local.toISOString().slice(0, 16), cycle_id: 'auto' };
-    });
-    const [cycleForm, setCycleForm] = useState({ stage: 'nursery', stocked_at: '', stocked_count: '', density_per_m2: '', sample_avg_weight_g: '' });
+    const [labForm, setLabForm] = useState(() => ({ sampled_at: farmDateTimeInput(), cycle_id: 'auto' }));
 
     const load = async () => {
         const [p, r, l, c] = await Promise.all([
@@ -36,7 +31,6 @@ export default function PondDetail() {
             api.get(`/ponds/${id}/cycles`),
         ]);
         setPond(p.data);
-        setCycleWeight(p.data.cycle?.sample_avg_weight_g ?? '');
         setReadings(r.data);
         setLabs(l.data);
         setCycles(c.data);
@@ -47,7 +41,7 @@ export default function PondDetail() {
     const submitLab = async (e) => {
         e.preventDefault();
         setLabError('');
-        const payload = { ...labForm, sampled_at: new Date(labForm.sampled_at).toISOString() };
+        const payload = { ...labForm, sampled_at: farmInputToIso(labForm.sampled_at) };
         if (payload.cycle_id === 'auto') delete payload.cycle_id;
         else if (payload.cycle_id === 'none') payload.cycle_id = null;
         ['no2_ppm', 'nh3_ppm', 'alkalinity_ppm', 'ca_ppm', 'mg_ppm', 'k_ppm'].forEach((k) => {
@@ -64,39 +58,6 @@ export default function PondDetail() {
         } finally {
             setLabSaving(false);
         }
-    };
-
-    const submitCycle = async (e) => {
-        e.preventDefault();
-        await api.post(`/ponds/${id}/cycles`, {
-            stage: cycleForm.stage,
-            status: 'active',
-            stocked_at: cycleForm.stocked_at || null,
-            stocked_count: cycleForm.stocked_count ? Number(cycleForm.stocked_count) : null,
-            density_per_m2: cycleForm.density_per_m2 ? Number(cycleForm.density_per_m2) : null,
-            sample_avg_weight_g: cycleForm.sample_avg_weight_g ? Number(cycleForm.sample_avg_weight_g) : null,
-        });
-        load();
-    };
-
-    const updateCycleWeight = async (e) => {
-        e.preventDefault();
-        if (!pond?.cycle) return;
-        await api.patch(`/cycles/${pond.cycle.id}`, {
-            sample_avg_weight_g: cycleWeight === '' ? null : Number(cycleWeight),
-        });
-        load();
-    };
-
-    const closeCycle = async (e) => {
-        e.preventDefault();
-        if (!pond?.cycle) return;
-        await api.patch(`/cycles/${pond.cycle.id}`, {
-            status: 'harvested',
-            harvested_at: harvestedAt || null,
-        });
-        setHarvestedAt('');
-        load();
     };
 
     if (!pond) return <div>…</div>;
@@ -117,40 +78,7 @@ export default function PondDetail() {
                 </div>
             )}
 
-            <section className="card p-4">
-                <h2 className="font-medium mb-2">{tr('cycle')}</h2>
-                {pond.cycle ? (
-                    <div className="text-sm text-slate-600 dark:text-slate-300">
-                        {tr(pond.cycle.stage)} · DOC {pond.cycle.doc ?? '—'} · {pond.cycle.stocked_at || ''} · {tr('weight')}: {pond.cycle.sample_avg_weight_g ?? '—'}
-                    </div>
-                ) : <div className="muted text-sm mb-2">{tr('noData')}</div>}
-                {pond.cycle && (
-                    <form onSubmit={updateCycleWeight} className="flex flex-wrap gap-2 mt-3 text-sm">
-                        <input type="number" min="0" step="0.1" aria-label={tr('weight')} placeholder={tr('weight')} className="field sm:w-36" value={cycleWeight} onChange={(e) => setCycleWeight(e.target.value)} />
-                        <button className="btn min-h-11">{tr('updateWeight')}</button>
-                    </form>
-                )}
-                {pond.cycle ? (
-                    <form onSubmit={closeCycle} className="flex flex-col sm:flex-row flex-wrap gap-2 mt-3 text-sm">
-                        <label className="flex flex-col gap-1">
-                            <span className="muted">{tr('harvestDate')}</span>
-                            <input type="date" className="field" value={harvestedAt} onChange={(e) => setHarvestedAt(e.target.value)} />
-                        </label>
-                        <button className="btn min-h-11 self-end">{tr('closeCycle')}</button>
-                    </form>
-                ) : (
-                    <form onSubmit={submitCycle} className="flex flex-col sm:flex-row flex-wrap gap-2 mt-3 text-sm">
-                        <select className="field" value={cycleForm.stage} onChange={(e) => setCycleForm({ ...cycleForm, stage: e.target.value })}>
-                            <option value="nursery">{tr('nursery')}</option>
-                            <option value="growout">{tr('growout')}</option>
-                        </select>
-                        <input type="date" className="field" value={cycleForm.stocked_at} onChange={(e) => setCycleForm({ ...cycleForm, stocked_at: e.target.value })} />
-                        <input placeholder={tr('stockedCount')} className="field sm:w-28" value={cycleForm.stocked_count} onChange={(e) => setCycleForm({ ...cycleForm, stocked_count: e.target.value })} />
-                        <input type="number" min="0" step="0.1" placeholder={tr('weight')} className="field sm:w-36" value={cycleForm.sample_avg_weight_g} onChange={(e) => setCycleForm({ ...cycleForm, sample_avg_weight_g: e.target.value })} />
-                        <button className="btn min-h-11">{tr('newCycle')}</button>
-                    </form>
-                )}
-            </section>
+            <CycleManager pond={pond} cycles={cycles} reload={load} tr={tr} />
 
             <section className="card p-4">
                 <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-2">
@@ -172,7 +100,7 @@ export default function PondDetail() {
                     <h3 className="text-sm font-medium mb-2">{tr('latest')}</h3>
                     <ProbeSummary reading={pond.latest_reading} tr={tr} />
                     {pond.latest_reading?.recorded_at && (
-                        <p className="text-xs muted mt-2">{new Date(pond.latest_reading.recorded_at).toLocaleString(user?.locale || 'vi')}</p>
+                        <p className="text-xs muted mt-2">{formatFarmTime(pond.latest_reading.recorded_at, user?.locale)}</p>
                     )}
                     {pond.latest_reading && (
                         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs muted mt-2 break-all">
@@ -207,7 +135,7 @@ export default function PondDetail() {
                 </div>
                 {showLab && (
                     <form onSubmit={submitLab} className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-4 text-sm">
-                        <input required type="datetime-local" className="field" value={labForm.sampled_at} onChange={(e) => setLabForm({ ...labForm, sampled_at: e.target.value })} />
+                        <label>{tr('sampledAt')} · {tr('vietnamTime')}<input required type="datetime-local" className="field w-full" value={labForm.sampled_at} onChange={(e) => setLabForm({ ...labForm, sampled_at: e.target.value })} /></label>
                         <select aria-label={tr('cycle')} className="field" value={labForm.cycle_id} onChange={(e) => setLabForm({ ...labForm, cycle_id: e.target.value })}>
                             <option value="auto">{tr('cycleByDate')}</option>
                             <option value="none">{tr('noCycle')}</option>
@@ -233,10 +161,10 @@ export default function PondDetail() {
                         <tbody>
                             {labs.map((row) => (
                                 <tr key={row.id} className="border-t border-slate-200 dark:border-slate-800">
-                                    <td className="py-1 whitespace-nowrap">{new Date(row.sampled_at).toLocaleString(user?.locale || 'vi')}</td>
+                                    <td className="py-1 whitespace-nowrap">{formatFarmTime(row.sampled_at, user?.locale)}</td>
                                     <td>{row.no2_ppm ?? '—'}</td>
                                     <td>{row.nh3_ppm ?? '—'}</td>
-                                    <LabNh3Cells row={row} tr={tr} />
+                                    <LabNh3Cells row={row} tr={tr} locale={user?.locale} />
                                     <td>{row.alkalinity_ppm ?? '—'}</td>
                                     <td>{row.ca_ppm ?? '—'}</td>
                                     <td>{row.mg_ppm ?? '—'}</td>

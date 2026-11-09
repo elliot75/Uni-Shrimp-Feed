@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { t } from '../i18n';
+import { formatFarmTime } from '../utils/time';
 
 export default function DevicesPage() {
     const { user } = useAuth();
@@ -39,6 +40,15 @@ export default function DevicesPage() {
         if (nextName === (device.name || '')) return;
         await api.patch(`/devices/${device.id}`, { name: nextName || null });
         load();
+    };
+
+    const toggleDevice = async (device) => {
+        setActivationError('');
+        try {
+            await api.patch(`/devices/${device.id}`, { is_active: !device.is_active });
+            setActivationCodes((codes) => { const next = { ...codes }; delete next[device.id]; return next; });
+            await load();
+        } catch { setActivationError(tr('managementFailed')); }
     };
 
     const activate = async (device) => {
@@ -92,7 +102,7 @@ export default function DevicesPage() {
                             {canEdit ? (
                                 <input aria-label={tr('deviceAlias')} placeholder={tr('deviceAlias')} defaultValue={d.name || ''} onBlur={(e) => rename(d, e.target.value)} className="field mt-1" />
                             ) : d.name && <div className="muted">{d.name}</div>}
-                            <div className="muted">{d.pond_code || tr('unbind')} · {tr('lastSeen')}: {d.last_seen_at?.slice(0, 16) || '—'}</div>
+                            <div className="muted">{d.pond_code || tr('unbind')} · {tr('lastSeen')}: {formatFarmTime(d.last_seen_at, user?.locale)} · {d.is_active ? tr('enabled') : tr('disabled')}</div>
                         </div>
                         <div className="space-y-2 sm:max-w-sm">
                             {canEdit && (
@@ -101,6 +111,7 @@ export default function DevicesPage() {
                                     {ponds.map((p) => <option key={p.id} value={p.id}>{p.code}</option>)}
                                 </select>
                             )}
+                            {canEdit && (d.pond_id || user.role === 'admin') && <button type="button" className="btn-ghost min-h-11 w-full" onClick={() => toggleDevice(d)}>{tr(d.is_active ? 'disableDevice' : 'enableDevice')}</button>}
                             {user.role === 'admin' && (
                                 <>
                                     <button type="button" className="btn min-h-11 w-full disabled:opacity-50" disabled={!!activationBusy || !d.pond_id || !d.is_active || !d.mac_address} onClick={() => activate(d)}>
@@ -110,7 +121,7 @@ export default function DevicesPage() {
                                     {activationCodes[d.id] && (
                                         <div className="space-y-2">
                                             <input id={`activation-${d.id}`} aria-label={tr('activationCode')} readOnly value={activationCodes[d.id].activation_code} onFocus={(e) => e.target.select()} className="field w-full font-mono" />
-                                            <p className="text-xs muted">{tr('activationExpires')}: {new Date(activationCodes[d.id].expires_at).toLocaleString(user?.locale || 'vi')}</p>
+                                            <p className="text-xs muted">{tr('activationExpires')}: {formatFarmTime(activationCodes[d.id].expires_at, user?.locale)}</p>
                                             <button type="button" className="btn min-h-11 w-full" onClick={() => copyActivationCode(d.id)}>{tr('copyActivationCode')}</button>
                                         </div>
                                     )}

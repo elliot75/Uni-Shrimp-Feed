@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import api from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { t } from '../i18n';
+import { formatFarmTime } from '../utils/time';
 
 export default function AlertsPage() {
     const { user } = useAuth();
@@ -34,7 +35,7 @@ export default function AlertsPage() {
                         <div className="min-w-0">
                             <Link to={`/ponds/${a.pond_id}`} className="text-teal-700 dark:text-teal-400 text-sm">{a.pond_code}</Link>
                             <div className="break-words">{a[msg]}</div>
-                            <div className="text-xs muted">{a.severity} · {a.opened_at?.slice(0, 16)}</div>
+                            <div className="text-xs muted">{a.severity} · {formatFarmTime(a.opened_at, user?.locale)}</div>
                         </div>
                         {!a.acknowledged_at && !a.resolved_at && (
                             <button onClick={() => ack(a.id)} className="btn-ghost text-xs min-h-11 shrink-0">{tr('ack')}</button>

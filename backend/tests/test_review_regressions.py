@@ -120,7 +120,7 @@ def test_existing_alert_refreshes_values_before_notification():
     conn, cur = connection_with_cursor()
     previous = {"id": "event-a", "value": 8, "last_notified_at": None}
     updated = previous | {"value": 9, "message_zh": "updated", "severity": "critical"}
-    cur.fetchone.side_effect = [previous, updated]
+    cur.fetchone.side_effect = [{"code": "PH_HIGH"}, previous, updated, updated]
     rule = {"code": "PH_HIGH", "severity": "critical", "metric": "ph"}
     pond = {"id": "pond-a"}
     with patch.object(alerts, "notify_alert") as notify:

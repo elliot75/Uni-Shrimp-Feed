@@ -59,7 +59,8 @@ def load_lookup(conn) -> list[dict]:
 def load_active_cycle(conn, pond_id) -> dict | None:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT * FROM shrimp.cycles WHERE pond_id = %s AND status = 'active' LIMIT 1",
+            # Acquire the cycle lock before evaluating or resolving any alerts.
+            "SELECT * FROM shrimp.cycles WHERE pond_id = %s AND status = 'active' LIMIT 1 FOR KEY SHARE",
             (pond_id,),
         )
         row = cur.fetchone()
@@ -194,7 +195,19 @@ def flush_notifications(conn) -> None:
         return
     try:
         for event, pond in queued:
-            notify_alert(conn, event, pond)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT ae.* FROM shrimp.alert_events ae
+                       JOIN shrimp.alert_rules ar ON ar.code = ae.rule_code
+                       LEFT JOIN shrimp.cycles c ON c.id = ae.cycle_id
+                       WHERE ae.id = %s AND ae.resolved_at IS NULL AND ar.is_active
+                         AND (ae.metric IN ('ph', 'do_mg_l', 'heartbeat')
+                              OR ae.cycle_id IS NULL OR c.status = 'active')""",
+                    (event["id"],),
+                )
+                current = cur.fetchone()
+            if current:
+                notify_alert(conn, dict(current), pond)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -206,11 +219,15 @@ def retry_unnotified(conn, limit: int = 50) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT * FROM shrimp.alert_events
-            WHERE resolved_at IS NULL
-              AND last_notified_at IS NULL
-              AND opened_at > now() - interval '7 days'
-            ORDER BY opened_at
+            SELECT ae.* FROM shrimp.alert_events ae
+            JOIN shrimp.alert_rules ar ON ar.code = ae.rule_code
+            LEFT JOIN shrimp.cycles c ON c.id = ae.cycle_id
+            WHERE ae.resolved_at IS NULL AND ar.is_active
+              AND (ae.metric IN ('ph', 'do_mg_l', 'heartbeat')
+                   OR ae.cycle_id IS NULL OR c.status = 'active')
+              AND ae.last_notified_at IS NULL
+              AND ae.opened_at > now() - interval '7 days'
+            ORDER BY ae.opened_at
             LIMIT %s
             """,
             (limit,),
@@ -240,6 +257,22 @@ def _should_notify(event: dict) -> bool:
 
 def upsert_alert(conn, pond, cycle, rule, value, message_vi, message_zh) -> None:
     with conn.cursor() as cur:
+        # Lifecycle changes take FOR UPDATE on these rows. Hold KEY SHARE until
+        # commit so they either precede this check or clear this write afterward.
+        # KEY SHARE permits ordinary cycle edits that reevaluate existing labs.
+        if cycle and rule['metric'] not in ('ph', 'do_mg_l', 'heartbeat'):
+            cur.execute(
+                "SELECT id FROM shrimp.cycles WHERE id = %s AND status = 'active' FOR KEY SHARE",
+                (cycle['id'],),
+            )
+            if not cur.fetchone():
+                return
+        cur.execute(
+            "SELECT code FROM shrimp.alert_rules WHERE code = %s AND is_active FOR KEY SHARE",
+            (rule['code'],),
+        )
+        if not cur.fetchone():
+            return
         cur.execute(
             """
             SELECT * FROM shrimp.alert_events
@@ -288,6 +321,12 @@ def upsert_alert(conn, pond, cycle, rule, value, message_vi, message_zh) -> None
 
 def resolve_alert(conn, pond_id, rule_code) -> None:
     with conn.cursor() as cur:
+        # Keep rule -> event lock order, including non-firing evaluations, to
+        # avoid deadlocks with rule updates while processing several readings.
+        cur.execute(
+            "SELECT code FROM shrimp.alert_rules WHERE code = %s FOR KEY SHARE",
+            (rule_code,),
+        )
         cur.execute(
             """
             UPDATE shrimp.alert_events

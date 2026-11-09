@@ -420,7 +420,10 @@ def update_cycle(
     conn=Depends(get_db),
 ):
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT * FROM shrimp.cycles WHERE id = %s", (str(cycle_id),))
+        # Conflict with alert writers' KEY SHARE before clearing cycle alerts.
+        # An ordinary UPDATE of status only takes NO KEY UPDATE, which does not.
+        lock = " FOR UPDATE" if body.status in ("harvested", "aborted") else ""
+        cur.execute("SELECT * FROM shrimp.cycles WHERE id = %s" + lock, (str(cycle_id),))
         cycle = cur.fetchone()
     if not cycle:
         raise HTTPException(status_code=404, detail="Cycle not found")
@@ -436,7 +439,8 @@ def update_cycle(
     elif cycle["status"] == "active" and fields.get("status", "active") == "active" and fields.get("harvested_at") is not None:
         raise HTTPException(status_code=422, detail="An active cycle cannot have a harvest date")
     stocked = fields.get("stocked_at", cycle.get("stocked_at"))
-    if fields.get("harvested_at") and stocked and fields["harvested_at"] < stocked:
+    harvested = fields.get("harvested_at", cycle.get("harvested_at"))
+    if harvested and stocked and harvested < stocked:
         raise HTTPException(status_code=422, detail="Harvest date is before the stocking date")
     if not fields:
         return _cycle_doc(dict(cycle))
@@ -459,7 +463,7 @@ def update_cycle(
             args,
         )
         row = cur.fetchone()
-        if fields.get("status") == "harvested":
+        if fields.get("status") in ("harvested", "aborted"):
             cur.execute(
                 """
                 UPDATE shrimp.alert_events SET resolved_at = now()

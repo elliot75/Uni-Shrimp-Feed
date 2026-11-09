@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from threading import Lock
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,6 +23,7 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 _LOGIN_WINDOW = timedelta(minutes=15)
 _LOGIN_LIMIT = 8
 _login_failures: dict[str, list[datetime]] = {}
+_login_locks = [Lock() for _ in range(64)]
 
 
 def _session_public(user: dict) -> dict:
@@ -65,6 +67,15 @@ def _prune_failures(username: str) -> list[datetime]:
 @router.post("/login")
 def login(body: LoginRequest, conn=Depends(get_db)):
     username = body.username.lower()
+    # Serialize attempts for the same account within this process so parallel
+    # requests cannot all pass the limit before failures are recorded.
+    with _login_locks[hash(username) % len(_login_locks)]:
+        return _login(body, username, conn)
+
+
+def _login(body: LoginRequest, username: str, conn):
+    if len(_prune_failures(username)) >= _LOGIN_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many login attempts")
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
@@ -84,8 +95,6 @@ def login(body: LoginRequest, conn=Depends(get_db)):
             "ver": user_token_version(conn, user["id"]),
         })
         return {"access_token": token, "token_type": "bearer", "user": _public_user(user)}
-    if len(_prune_failures(username)) >= _LOGIN_LIMIT:
-        raise HTTPException(status_code=429, detail="Too many login attempts")
     _login_failures.setdefault(username, []).append(datetime.now(timezone.utc))
     raise HTTPException(status_code=401, detail="Invalid credentials")
 

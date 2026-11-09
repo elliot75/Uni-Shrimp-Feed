@@ -54,3 +54,12 @@ SKIP_WORKER=1 pytest -q tests/test_alerts.py tests/test_review_regressions.py te
 ```
 
 PGlite 只列在根目錄的開發依賴，不加入正式後端或前端映像。這組測試執行實際的 PostgreSQL 取樣查詢、警報評估、FastAPI 路由及 React 靜態渲染；不取代正式 PostgreSQL 的負載／併發測試。取樣與判定契約見 [docs/probe-ingest.md](docs/probe-ingest.md#檢驗-nh₃-的取樣與判定)。
+
+警報競態回歸測試涵蓋規則停用、週期收成／中止與警報寫入的先後順序。`test_alert_concurrency.py` 另以 `pgserver` 啟動臨時 PostgreSQL，使用獨立連線驗證交易鎖定與避免死鎖；不使用 `.env` 資料庫，測試結束會關閉伺服器並移除資料。從專案根目錄執行：
+
+```bash
+pip install -r backend/tests/requirements.txt
+pytest -q backend/tests/test_review_fixes.py backend/tests/test_alert_concurrency.py
+```
+
+其中 `test_review_fixes.py` 仍需上述 PGlite 開發依賴。未安裝 `pgserver` 時，併發測試會明確標示為跳過；該套件不加入正式環境依賴。

@@ -65,15 +65,15 @@ export default function DevicesPage() {
         }
     };
 
-    const copyActivationCode = async (deviceId) => {
+    const copyField = async (id, value) => {
         try {
-            await navigator.clipboard.writeText(activationCodes[deviceId].activation_code);
-            setCopyMessage(tr('activationCopied'));
+            await navigator.clipboard.writeText(value);
+            setCopyMessage(tr('fieldCopied'));
         } catch {
-            const input = document.getElementById(`activation-${deviceId}`);
+            const input = document.getElementById(id);
             input.focus();
             input.select();
-            setCopyMessage(tr('activationCopyManually'));
+            setCopyMessage(tr('fieldCopyManually'));
         }
     };
 
@@ -120,9 +120,21 @@ export default function DevicesPage() {
                                     {(!d.pond_id || !d.is_active || !d.mac_address) && <p className="text-xs muted">{tr('activationNeedsBinding')}</p>}
                                     {activationCodes[d.id] && (
                                         <div className="space-y-2">
-                                            <input id={`activation-${d.id}`} aria-label={tr('activationCode')} readOnly value={activationCodes[d.id].activation_code} onFocus={(e) => e.target.select()} className="field w-full font-mono" />
+                                            <label className="block" htmlFor={`activation-${d.id}`}>{tr('activationCode')}</label>
+                                            <input id={`activation-${d.id}`} readOnly value={activationCodes[d.id].activation_code} onFocus={(e) => e.target.select()} className="field w-full font-mono" />
                                             <p className="text-xs muted">{tr('activationExpires')}: {formatFarmTime(activationCodes[d.id].expires_at, user?.locale)}</p>
-                                            <button type="button" className="btn min-h-11 w-full" onClick={() => copyActivationCode(d.id)}>{tr('copyActivationCode')}</button>
+                                            <button type="button" className="btn min-h-11 w-full" onClick={() => copyField(`activation-${d.id}`, activationCodes[d.id].activation_code)}>{tr('copyActivationCode')}</button>
+                                            <label className="block" htmlFor={`backend-${d.id}`}>{tr('deviceBackendUrl')}</label>
+                                            <input id={`backend-${d.id}`} readOnly value={activationCodes[d.id].backend_url || window.location.origin} onFocus={(e) => e.target.select()} className="field w-full font-mono" />
+                                            {!activationCodes[d.id].backend_url && <p className="text-xs muted">{tr('deviceBackendFallback')}</p>}
+                                            <button type="button" className="btn min-h-11 w-full" onClick={() => copyField(`backend-${d.id}`, activationCodes[d.id].backend_url || window.location.origin)}>{tr('copyBackendUrl')}</button>
+                                            {(activationCodes[d.id].backend_url || window.location.origin).startsWith('https://') ? (
+                                                activationCodes[d.id].ca_pem ? <>
+                                                    <label className="block" htmlFor={`pem-${d.id}`}>{tr('deviceCaPem')}</label>
+                                                    <textarea id={`pem-${d.id}`} readOnly rows={6} value={activationCodes[d.id].ca_pem} onFocus={(e) => e.target.select()} className="field w-full font-mono" />
+                                                    <button type="button" className="btn min-h-11 w-full" onClick={() => copyField(`pem-${d.id}`, activationCodes[d.id].ca_pem)}>{tr('copyCaPem')}</button>
+                                                </> : <p role="alert" className="text-xs text-rose-600 dark:text-rose-400">{tr('deviceCaMissing')}</p>
+                                            ) : <p className="text-xs muted">{tr('deviceCaNotNeeded')}</p>}
                                         </div>
                                     )}
                                 </>

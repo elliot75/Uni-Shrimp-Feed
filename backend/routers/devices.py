@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import logging
-from uuid import UUID
+import os
+from pathlib import Path
+import re
 import secrets
+import ssl
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 import psycopg2
@@ -44,6 +48,23 @@ def issue_ingest_key(device_id: UUID, response: Response, current_user: dict = D
     return {"device_id": str(device_id), "device_serial": device["mac_address"], "api_key": key}
 
 
+def _device_ca_pem():
+    path = os.getenv("DEVICE_CA_PEM_PATH", "").strip()
+    if not path:
+        return None
+    try:
+        pem = Path(path).read_text(encoding="ascii").strip()
+        if len(pem) > 4096 or not re.fullmatch(
+            r"-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----", pem
+        ):
+            raise ValueError("Expected one certificate of at most 4096 characters")
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=pem)
+        return pem
+    except (OSError, UnicodeError, ValueError):
+        logger.warning("Cannot load device root CA certificate from DEVICE_CA_PEM_PATH")
+        return None
+
+
 @router.post("/{device_id}/activation-code", response_model=DeviceActivationCode)
 def issue_activation_code(device_id: UUID, response: Response, current_user: dict = Depends(require_admin), conn=Depends(get_db)):
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -71,7 +92,12 @@ def issue_activation_code(device_id: UUID, response: Response, current_user: dic
         expires_at = cur.fetchone()["expires_at"]
     conn.commit()
     response.headers["Cache-Control"] = "no-store"
-    return {"device_id": str(device_id), "device_serial": device["mac_address"], "activation_code": code, "expires_at": expires_at}
+    return {
+        "device_id": str(device_id), "device_serial": device["mac_address"],
+        "activation_code": code, "expires_at": expires_at,
+        "backend_url": os.getenv("DEVICE_BACKEND_URL", "").strip().rstrip("/") or None,
+        "ca_pem": _device_ca_pem(),
+    }
 
 
 @router.post("/activate", response_model=DeviceKeyResponse)

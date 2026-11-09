@@ -2,6 +2,10 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 from uuid import uuid4
 
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 import psycopg2
 import pytest
 from fastapi.testclient import TestClient
@@ -139,7 +143,18 @@ def test_only_admin_can_issue_device_keys(api_client):
     conn.cursor.assert_not_called()
 
 
-def test_admin_issues_hashed_activation_code_with_expiry(api_client):
+def test_admin_issues_hashed_activation_code_with_expiry(api_client, monkeypatch, tmp_path):
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test CA")])
+    now = datetime.now(timezone.utc)
+    pem = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+           .serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(days=1))
+           .not_valid_after(now + timedelta(days=1)).sign(key, hashes.SHA256())
+           .public_bytes(serialization.Encoding.PEM).decode().strip())
+    cert = tmp_path / "root.pem"
+    cert.write_text(pem)
+    monkeypatch.setenv("DEVICE_BACKEND_URL", "https://devices.example.com/")
+    monkeypatch.setenv("DEVICE_CA_PEM_PATH", str(cert))
     client, conn, cur = api_client
     device_id = uuid4()
     expiry = datetime.now(timezone.utc)
@@ -151,9 +166,29 @@ def test_admin_issues_hashed_activation_code_with_expiry(api_client):
     assert response.status_code == 200
     code = response.json()["activation_code"]
     assert len(code) == 32
+    assert response.json()["backend_url"] == "https://devices.example.com"
+    assert response.json()["ca_pem"] == pem
     assert cur.execute.call_args.args[1] == (str(device_id), key_hash(code))
     assert response.headers["cache-control"] == "no-store"
     conn.commit.assert_called_once()
+
+
+@pytest.mark.parametrize("contents", [None, "not a certificate", "-----BEGIN PRIVATE KEY-----\nMAA=\n-----END PRIVATE KEY-----", "-----BEGIN CERTIFICATE-----\nMAA=\n-----END CERTIFICATE-----"])
+def test_missing_or_invalid_device_ca_is_not_returned(api_client, monkeypatch, tmp_path, contents):
+    client, _, cur = api_client
+    monkeypatch.delenv("DEVICE_BACKEND_URL", raising=False)
+    cert = tmp_path / "root.pem"
+    if contents is not None:
+        cert.write_text(contents)
+    monkeypatch.setenv("DEVICE_CA_PEM_PATH", str(cert))
+    cur.fetchone.side_effect = [
+        {"mac_address": "840D8E235164", "pond_id": str(uuid4()), "is_active": True},
+        {"expires_at": datetime.now(timezone.utc)},
+    ]
+    response = client.post(f"/api/devices/{uuid4()}/activation-code")
+    assert response.status_code == 200
+    assert response.json()["backend_url"] is None
+    assert response.json()["ca_pem"] is None
 
 
 def test_only_admin_can_issue_activation_codes(api_client):

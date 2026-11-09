@@ -11,7 +11,7 @@ ESP32 現在可透過 **`POST /api/probe-readings`** 上傳 JSON，由後端呼�
 先套用 `backend/sql/005_device_activation_codes.sql`，並重啟後端與更新前端。韌體已整合於 `/Users/elliot/ Data/ESP32/shrimp-monitor`；出廠韌體不包含設備金鑰。
 
 1. 管理員在「設備」頁以 ESP32 的 MAC 建立設備、啟用並綁定蝦池。
-2. 按「產生啟用碼」並複製。啟用碼有效 15 分鐘、綁定這台 MAC、限兌換一次；再次產生會替換上一組。
+2. 按「產生啟用碼」，複製頁面顯示的啟用碼、後端網址及 HTTPS 根 CA PEM。啟用碼有效 15 分鐘、綁定這台 MAC、限兌換一次；再次產生會替換上一組。
 3. 首次配網時，連線 ESP32 的 `Shrimp-XXXXXX` 熱點，填入 Wi-Fi、後端網址與啟用碼。已有 Wi-Fi 的設備可開啟 `http://shrimp-XXXXXX.local/setup`，或水質頁上的「設定後端 / 啟用設備」。HTTPS 需填入伺服器根憑證 PEM；區網 HTTP 可留空。
 4. ESP32 自行呼叫 `POST /api/devices/activate`，取得專屬金鑰並保存至 NVS。重開機後沿用儲存的設定，自動呼叫讀數 API。
 
@@ -22,7 +22,24 @@ curl -X POST "$API_BASE_URL/api/devices/$DEVICE_ID/activation-code" \
   -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN"
 ```
 
-回應包含 `device_id`、`device_serial`、`activation_code`、`expires_at`。`DEVICE_ID` 是設備內部 UUID，可由 `GET /api/devices` 取得。啟用碼原文只在產生時回傳，資料庫僅儲存雜湊。
+回應包含 `device_id`、`device_serial`、`activation_code`、`expires_at`、`backend_url`、`ca_pem`；未設定的網址和憑證為 `null`。`DEVICE_ID` 是設備內部 UUID，可由 `GET /api/devices` 取得。啟用碼原文只在產生時回傳，資料庫僅儲存雜湊。
+
+### 設定設備連線資料
+
+在後端的 `.env` 設定 `DEVICE_BACKEND_URL` 為 ESP32 可連線的服務根網址（例如 `https://example.com`，不含 `/api`）。此網址必須能轉送 `/api` 請求至後端。留空時設備頁顯示瀏覽器目前的管理頁網址，必須確認設備能連到該網址；`localhost` 對 ESP32 指向設備本身。
+
+HTTPS 另需設定 `DEVICE_CA_PEM_PATH` 為後端可讀取的伺服器根 CA **公開憑證**檔案絕對路徑，檔案須為單一 PEM 憑證且不超過 4096 字元。不可放入伺服器私鑰或憑證鏈。根 CA 必須能驗證該網址提供的 TLS 憑證；更換憑證時同步更新此檔案。未設定或讀取失敗時，設備頁會提示缺少 PEM。區網 HTTP 可留空。修改 `.env` 後重啟後端。
+
+Docker 部署時，路徑是**容器內路徑**，需以唯讀方式掛載公開憑證，例如建立 compose override：
+
+```yaml
+services:
+  backend:
+    volumes:
+      - /path/on/host/root-ca.pem:/run/device-root-ca.pem:ro
+```
+
+並在 `.env` 設定 `DEVICE_CA_PEM_PATH=/run/device-root-ca.pem`，重新建立後端容器。請確認容器內後端程序可讀取該檔案。
 
 ESP32 不需要管理員 JWT，以啟用碼換取金鑰：
 

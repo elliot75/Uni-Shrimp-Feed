@@ -179,6 +179,8 @@ class DeviceActivationCode(BaseModel):
     device_serial: str
     activation_code: str
     expires_at: datetime
+    backend_url: str | None = None
+    ca_pem: str | None = None
 
 
 class DeviceKeyResponse(BaseModel):

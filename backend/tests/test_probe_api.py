@@ -42,6 +42,41 @@ def payload():
     }
 
 
+def test_device_rule_endpoint_requires_matching_key_and_mac(api_client):
+    client, conn, cur = api_client
+    url = "/api/probe-readings/alert-rules?device_serial=840D8E235164"
+    assert client.get(url).status_code == 401
+    conn.cursor.assert_not_called()
+    cur.fetchone.return_value = None
+    assert client.get(url, headers={"X-Device-Key": "wrong"}).status_code == 401
+    assert cur.execute.call_args.args[1] == (key_hash("wrong"), "840D8E235164")
+    assert cur.execute.call_count == 1
+
+
+def test_device_rule_endpoint_returns_only_active_probe_limits(api_client):
+    client, conn, cur = api_client
+    cur.fetchone.return_value = {"id": str(uuid4())}
+    cur.fetchall.return_value = [
+        {"code": "PH_LOW", "min_value": 7.6, "max_value": None},
+        {"code": "DO_LOW", "min_value": 4.0, "max_value": None},
+    ]
+    response = client.get("/api/probe-readings/alert-rules?device_serial=840D8E235164", headers={"X-Device-Key": "secret"})
+    assert response.status_code == 200
+    assert response.json() == {"device_serial": "840D8E235164", "rules": {
+        "PH_LOW": {"min": 7.6, "max": None}, "DO_LOW": {"min": 4.0, "max": None}}}
+    sql = cur.execute.call_args.args[0]
+    assert "is_active = true" in sql
+    assert "DO_CRITICAL" in sql and "PH_HIGH" in sql
+    conn.commit.assert_not_called()
+
+
+def test_device_rule_endpoint_rejects_invalid_serial(api_client):
+    client, conn, _ = api_client
+    response = client.get("/api/probe-readings/alert-rules?device_serial=bad", headers={"X-Device-Key": "secret"})
+    assert response.status_code == 422
+    conn.cursor.assert_not_called()
+
+
 def test_ingest_requires_key_before_opening_database(api_client):
     client, conn, _ = api_client
     assert client.post("/api/probe-readings", json=payload()).status_code == 401

@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 import psycopg2
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import APIKeyHeader
 from psycopg2.extras import Json, RealDictCursor
 
@@ -27,6 +27,29 @@ def require_device_key(key: str | None = Depends(device_key_header)) -> str:
     if not key:
         raise HTTPException(status_code=401, detail="Device key required")
     return key_hash(key)
+
+
+@router.get("/alert-rules")
+def device_alert_rules(
+    device_serial: str = Query(min_length=12, max_length=12, pattern=r"^[0-9A-F]{12}$"),
+    hashed_key: str = Depends(require_device_key),
+    conn=Depends(get_db),
+):
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """SELECT d.id FROM shrimp.devices d
+               JOIN shrimp.device_api_keys k ON k.device_id = d.id
+               WHERE k.key_hash = %s AND d.mac_address = %s AND d.is_active = true""",
+            (hashed_key, device_serial),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=401, detail="Invalid device credentials")
+        cur.execute(
+            """SELECT code, min_value, max_value FROM shrimp.alert_rules
+               WHERE is_active = true AND code IN ('PH_LOW', 'PH_HIGH', 'DO_LOW', 'DO_CRITICAL')"""
+        )
+        rules = {row["code"]: {"min": row["min_value"], "max": row["max_value"]} for row in cur.fetchall()}
+    return {"device_serial": device_serial, "rules": rules}
 
 
 @router.post("", response_model=ProbeReadingReceipt)

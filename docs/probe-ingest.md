@@ -12,8 +12,14 @@ ESP32 現在可透過 **`POST /api/probe-readings`** 上傳 JSON，由後端呼�
 
 1. 管理員在「設備」頁以 ESP32 的 MAC 建立設備、啟用並綁定蝦池。
 2. 按「產生啟用碼」，複製頁面顯示的啟用碼、後端網址及 HTTPS 根 CA PEM。啟用碼有效 15 分鐘、綁定這台 MAC、限兌換一次；再次產生會替換上一組。
-3. 首次配網時，連線 ESP32 的 `Shrimp-XXXXXX` 熱點，填入 Wi-Fi、後端網址與啟用碼。已有 Wi-Fi 的設備可開啟 `http://shrimp-XXXXXX.local/setup`，或水質頁上的「設定後端 / 啟用設備」。HTTPS 需填入伺服器根憑證 PEM；區網 HTTP 可留空。
+3. 首次配網時，依韌體的 BOOT 鍵說明開啟 `Shrimp-XXXXXX` 熱點並設定 Wi-Fi，再開啟 `http://shrimp-XXXXXX.local/setup` 設定後端網址與啟用碼。HTTPS 需填入伺服器根憑證 PEM；區網 HTTP 可留空。
 4. ESP32 自行呼叫 `POST /api/devices/activate`，取得專屬金鑰並保存至 NVS。重開機後沿用儲存的設定，自動呼叫讀數 API。
+
+### 探頭警報門檻同步
+
+設備使用相同的 `X-Device-Key` 呼叫 `GET /api/probe-readings/alert-rules?device_serial=<12位大寫MAC>`，後端先確認金鑰、MAC 與設備啟用狀態，再回傳啟用的 `PH_LOW`、`PH_HIGH`、`DO_LOW`、`DO_CRITICAL` 規則。未啟用的規則不包含在回應中；每條規則包含 `min`、`max`，無值為 `null`。此介面不接受管理員 JWT 取代設備金鑰。
+
+更新後端後再更新韌體。設備連續 3 次讀取超出同一門檻時送出異常讀數；後端仍使用現有警報規則及背景工作處理通知。規則同步間隔及離線佇列限制請見韌體專案的 `docs/backend-activation.md`。
 
 管理員亦可由 API 產生啟用碼：
 

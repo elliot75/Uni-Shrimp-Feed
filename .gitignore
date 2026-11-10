@@ -13,3 +13,5 @@ backend/.venv/
 *.docx
 *.db
 *.sqlite*
+*.override.yml
+compose.override.yml

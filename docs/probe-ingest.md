@@ -41,6 +41,8 @@ services:
 
 並在 `.env` 設定 `DEVICE_CA_PEM_PATH=/run/device-root-ca.pem`，重新建立後端容器。請確認容器內後端程序可讀取該檔案。
 
+更換憑證時的提取與簽署操作指南，請參閱 [ESP32 設備根憑證管理與更新手冊](device-root-ca-management.md)，或使用輔助工具 `scripts/update_device_ca.py`。
+
 ESP32 不需要管理員 JWT，以啟用碼換取金鑰：
 
 ```bash

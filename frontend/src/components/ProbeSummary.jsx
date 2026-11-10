@@ -12,11 +12,11 @@ export const PROBE_METRICS = [
 export default function ProbeSummary({ reading, tr }) {
     return (
         <div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+            <div className="probe-metrics grid gap-3 text-sm">
                 {PROBE_METRICS.map(({ field, label, unit }) => (
-                    <div key={field}>
+                    <div key={field} className="min-w-0">
                         <div className="muted text-xs">{tr(label)}</div>
-                        <div>{reading?.[field] ?? '—'}{reading?.[field] != null && unit && <span className="text-xs muted ml-1">{unit}</span>}</div>
+                        <div className="[overflow-wrap:anywhere]">{reading?.[field] ?? '—'}{reading?.[field] != null && unit && <> <span className="text-xs muted">{unit}</span></>}</div>
                     </div>
                 ))}
             </div>

@@ -65,6 +65,10 @@ body {
   @apply text-slate-500 dark:text-slate-400;
 }
 
+.probe-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(8rem, (100% - 2.25rem) / 4)), 1fr));
+}
+
 @media (max-width: 767px) {
   input, select, textarea {
     font-size: 16px;

@@ -28,26 +28,35 @@ export default function RulesPage() {
             <h1 className="text-2xl font-semibold mb-4">{tr('rules')}</h1>
             {error && <p role="alert" className="text-rose-600 dark:text-rose-400 mb-4">{error}</p>}
             <div className="space-y-2">
-                {rules.map((r) => (
-                    <div key={r.id} className="card p-4 grid sm:grid-cols-2 lg:grid-cols-6 gap-2 text-sm items-center">
-                        <div className="font-mono text-teal-700 dark:text-teal-400 break-all">{r.code}</div>
-                        <label>{tr('min')}
-                            <input className="field w-full mt-1" defaultValue={r.min_value ?? ''} onBlur={(e) => save(r, { min_value: e.target.value === '' ? null : Number(e.target.value) })} />
-                        </label>
-                        <label>{tr('max')}
-                            <input className="field w-full mt-1" defaultValue={r.max_value ?? ''} onBlur={(e) => save(r, { max_value: e.target.value === '' ? null : Number(e.target.value) })} />
-                        </label>
-                        <select className="field" value={r.severity} onChange={(e) => save(r, { severity: e.target.value })}>
-                            <option value="info">{tr('info')}</option>
-                            <option value="warn">{tr('warn')}</option>
-                            <option value="critical">{tr('critical')}</option>
-                        </select>
-                        <label className="flex items-center gap-2 min-h-11">
-                            <input type="checkbox" checked={r.is_active} onChange={(e) => save(r, { is_active: e.target.checked })} />
-                            {tr('enabled')}
-                        </label>
-                    </div>
-                ))}
+                {rules.map((r) => {
+                    const descriptionKey = `rule_${r.code}`;
+                    const description = tr(descriptionKey);
+                    return (
+                        <div key={r.id} className="card p-4 grid sm:grid-cols-2 lg:grid-cols-6 gap-4 text-sm items-center">
+                            <div className="sm:col-span-2 min-w-0">
+                                {description !== descriptionKey && <div className="font-medium mb-1">{description}</div>}
+                                <div className="font-mono text-xs text-teal-700 dark:text-teal-400 break-all">{r.code}</div>
+                            </div>
+                            <label className="min-w-0">{tr('min')}
+                                <input className="field w-full mt-1" defaultValue={r.min_value ?? ''} onBlur={(e) => save(r, { min_value: e.target.value === '' ? null : Number(e.target.value) })} />
+                            </label>
+                            <label className="min-w-0">{tr('max')}
+                                <input className="field w-full mt-1" defaultValue={r.max_value ?? ''} onBlur={(e) => save(r, { max_value: e.target.value === '' ? null : Number(e.target.value) })} />
+                            </label>
+                            <label className="min-w-0">{tr('severity')}
+                                <select className="field w-full mt-1" value={r.severity} onChange={(e) => save(r, { severity: e.target.value })}>
+                                    <option value="info">{tr('info')}</option>
+                                    <option value="warn">{tr('warn')}</option>
+                                    <option value="critical">{tr('critical')}</option>
+                                </select>
+                            </label>
+                            <label className="flex items-center gap-2 min-h-11">
+                                <input type="checkbox" checked={r.is_active} onChange={(e) => save(r, { is_active: e.target.checked })} />
+                                {tr('enabled')}
+                            </label>
+                        </div>
+                    );
+                })}
             </div>
         </div>
     );

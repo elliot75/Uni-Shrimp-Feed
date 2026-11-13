@@ -213,3 +213,20 @@ class AlertRuleUpdate(BaseModel):
     max_value: Optional[float] = Field(default=None, allow_inf_nan=False)
     severity: Optional[Literal["info", "warn", "critical"]] = None
     is_active: Optional[bool] = None
+
+
+class TelegramAnnouncement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=3000)
+    id: UUID
+    user_ids: list[UUID] = Field(min_length=1)
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value):
+        if not value.strip():
+            raise ValueError("Message cannot be blank")
+        if len(value.encode("utf-16-le")) // 2 > 4096:
+            raise ValueError("Message exceeds Telegram's length limit")
+        return value.strip()

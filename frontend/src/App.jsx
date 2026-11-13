@@ -11,6 +11,7 @@ import UsersPage from './pages/UsersPage';
 import DevicesPage from './pages/DevicesPage';
 import ProfilePage from './pages/ProfilePage';
 import RulesPage from './pages/RulesPage';
+import AnnouncementsPage from './pages/AnnouncementsPage';
 
 function Protected({ children, roles }) {
     const { user } = useAuth();
@@ -38,6 +39,7 @@ function AppRoutes() {
                 <Route path="alerts" element={<AlertsPage />} />
                 <Route path="devices" element={<DevicesPage />} />
                 <Route path="profile" element={<ProfilePage />} />
+                <Route path="announcements" element={<Protected roles={['admin']}><AnnouncementsPage /></Protected>} />
                 <Route
                     path="users"
                     element={

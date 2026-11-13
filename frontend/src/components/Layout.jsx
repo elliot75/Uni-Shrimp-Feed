@@ -37,6 +37,7 @@ export default function Layout() {
             <NavLink to="/devices" className={linkClass} onClick={closeMenu}>{tr('devices')}</NavLink>
             {user?.role === 'admin' && <NavLink to="/users" className={linkClass} onClick={closeMenu}>{tr('users')}</NavLink>}
             {user?.role === 'admin' && <NavLink to="/rules" className={linkClass} onClick={closeMenu}>{tr('rules')}</NavLink>}
+            {user?.role === 'admin' && <NavLink to="/announcements" className={linkClass} onClick={closeMenu}>{tr('telegramAnnouncement')}</NavLink>}
             <NavLink to="/profile" className={linkClass} onClick={closeMenu}>{tr('profile')}</NavLink>
         </nav>
     );

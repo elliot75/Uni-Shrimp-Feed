@@ -17,10 +17,11 @@ if env_path.exists():
 else:
     load_dotenv()
 
+from announcement_worker import process_announcements
 from alerts import evaluate_stale_devices, flush_notifications, process_pending_readings, retry_unnotified
 from db import get_connection
 from routers import alerts as alerts_routes
-from routers import auth_routes, dashboard, devices, ponds, probe_readings, users
+from routers import announcements, auth_routes, dashboard, devices, ponds, probe_readings, users
 from telegram_service import get_updates
 
 _tg_offset = None
@@ -88,6 +89,7 @@ def _worker_tick() -> None:
     finally:
         conn.close()
     _handle_telegram_updates()
+    process_announcements()
 
 
 async def _worker() -> None:
@@ -125,6 +127,7 @@ app.add_middleware(
 )
 app.include_router(auth_routes.router)
 app.include_router(users.router)
+app.include_router(announcements.router)
 app.include_router(ponds.router)
 app.include_router(devices.router)
 app.include_router(alerts_routes.router)

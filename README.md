@@ -24,6 +24,8 @@ cd frontend && npm install && npm run dev
 
 Docker：`docker compose up --build`（前端 8081，後端 8001）。
 
+Telegram 公告功能需要先對既有資料庫套用 `backend/sql/010_telegram_announcements.sql`（或重新執行初始化腳本），並確認後端資料庫帳號可讀寫新表，再啟動更新後的後端與前端。公告由背景工作逐批發送；若服務中斷或 Telegram 回應逾時，可能已送出的對象會顯示為「狀態不明」，不會自動重發，請先確認收件情況。
+
 ## 探頭寫入
 
 見 [docs/probe-ingest.md](docs/probe-ingest.md)。ESP32 使用 `POST /api/probe-readings`，以 `X-Device-Key` 傳送各設備專屬金鑰。管理員在設備頁產生 15 分鐘有效的一次性啟用碼，ESP32 首次配網時以 `POST /api/devices/activate` 換取金鑰並存入 NVS；所有設備可使用相同韌體。先套用 `backend/sql/004_device_api_keys.sql`、`005_device_activation_codes.sql` 並重新啟動後端。管理員仍可使用 `POST /api/devices/{device_id}/ingest-key` 直接輪替金鑰。既有 `shrimp_device` 直接呼叫 `shrimp.ingest_probe_reading(...)` 的方式仍保留。

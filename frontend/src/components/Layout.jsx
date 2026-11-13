@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import ThemeToggle from './ThemeToggle';
+import { CompanyLogo, CopyrightNotice } from './CompanyBrand';
 import { t } from '../i18n';
 
 const linkClass = ({ isActive }) =>
@@ -81,6 +82,7 @@ export default function Layout() {
                 } md:static md:translate-x-0 md:flex md:shrink-0`}
             >
                 <div>
+                    <CompanyLogo className="w-32 mb-3" />
                     <div className="text-lg font-semibold text-teal-700 dark:text-teal-400">Uni-Shrimp</div>
                     <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">{user?.display_name} · {tr(user?.role)}</div>
                 </div>
@@ -99,12 +101,14 @@ export default function Layout() {
                             <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
                         </svg>
                     </button>
+                    <CompanyLogo className="w-16" />
                     <div className="font-semibold text-teal-700 dark:text-teal-400 flex-1">Uni-Shrimp</div>
                     <ThemeToggle locale={locale} />
                 </header>
                 <main className="flex-1 p-4 md:p-6 overflow-auto">
                     <Outlet />
                 </main>
+                <CopyrightNotice />
             </div>
         </div>
     );

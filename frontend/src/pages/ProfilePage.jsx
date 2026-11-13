@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { t } from '../i18n';
 
 export default function ProfilePage() {
-    const { user, updateMe, changePassword } = useAuth();
+    const { user, setUser, updateMe, changePassword } = useAuth();
     const tr = (k) => t(user?.locale || 'vi', k);
     const [form, setForm] = useState({ display_name: user.display_name || '', email: user.email || '', phone: user.phone || '', locale: user.locale || 'vi' });
     const [bind, setBind] = useState(null);
@@ -13,6 +13,43 @@ export default function ProfilePage() {
     const [pwMsg, setPwMsg] = useState('');
     const [pwError, setPwError] = useState('');
     const [pwSaving, setPwSaving] = useState(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        let checking = false;
+        const checkBinding = async () => {
+            if (checking || document.visibilityState === 'hidden') return;
+            checking = true;
+            const token = localStorage.getItem('uni_shrimp_token');
+            try {
+                const { data } = await api.get('/auth/me');
+                if (cancelled || !token || localStorage.getItem('uni_shrimp_token') !== token) return;
+                setUser((current) => {
+                    if (!current || current.id !== user.id || current.telegram_bound === data.telegram_bound) return current;
+                    const updated = { ...current, telegram_bound: data.telegram_bound };
+                    localStorage.setItem('uni_shrimp_user', JSON.stringify(updated));
+                    return updated;
+                });
+            } catch {
+                // A later check can retry if the network is temporarily unavailable.
+            } finally {
+                checking = false;
+            }
+        };
+        checkBinding();
+        const onVisibility = () => { if (document.visibilityState === 'visible') checkBinding(); };
+        document.addEventListener('visibilitychange', onVisibility);
+        window.addEventListener('focus', checkBinding);
+        const timer = bind && !user.telegram_bound ? window.setInterval(() => {
+            if (Date.now() < Date.parse(bind.expires_at)) checkBinding();
+        }, 5000) : null;
+        return () => {
+            cancelled = true;
+            document.removeEventListener('visibilitychange', onVisibility);
+            window.removeEventListener('focus', checkBinding);
+            if (timer) window.clearInterval(timer);
+        };
+    }, [bind, user.id, user.telegram_bound, setUser]);
 
     const save = async (e) => {
         e.preventDefault();

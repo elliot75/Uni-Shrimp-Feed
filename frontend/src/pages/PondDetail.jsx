@@ -9,6 +9,8 @@ import ProbeSummary, { PROBE_METRICS } from '../components/ProbeSummary';
 import CycleManager from '../components/CycleManager';
 import { farmDateTimeInput, farmInputToIso, formatFarmTime } from '../utils/time';
 
+const createLabForm = () => ({ sampled_at: farmDateTimeInput(), cycle_id: 'auto' });
+
 export default function PondDetail() {
     const { id } = useParams();
     const { user } = useAuth();
@@ -21,7 +23,7 @@ export default function PondDetail() {
     const [showLab, setShowLab] = useState(false);
     const [labError, setLabError] = useState('');
     const [labSaving, setLabSaving] = useState(false);
-    const [labForm, setLabForm] = useState(() => ({ sampled_at: farmDateTimeInput(), cycle_id: 'auto' }));
+    const [labForm, setLabForm] = useState(createLabForm);
 
     const load = async () => {
         const [p, r, l, c] = await Promise.all([
@@ -38,6 +40,14 @@ export default function PondDetail() {
 
     useEffect(() => { load(); }, [id, range]);
 
+    const toggleLabForm = () => {
+        if (!showLab) {
+            setLabForm(createLabForm());
+            setLabError('');
+        }
+        setShowLab(!showLab);
+    };
+
     const submitLab = async (e) => {
         e.preventDefault();
         setLabError('');
@@ -51,6 +61,7 @@ export default function PondDetail() {
         setLabSaving(true);
         try {
             await api.post(`/ponds/${id}/lab-tests`, payload);
+            setLabForm(createLabForm());
             setShowLab(false);
             await load();
         } catch {
@@ -131,7 +142,7 @@ export default function PondDetail() {
             <section className="card p-4">
                 <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-3">
                     <h2 className="font-medium">{tr('lab')}</h2>
-                    <button type="button" onClick={() => setShowLab(!showLab)} className="btn text-sm min-h-11">{tr('addLab')}</button>
+                    <button type="button" disabled={labSaving} onClick={toggleLabForm} className="btn text-sm min-h-11">{tr('addLab')}</button>
                 </div>
                 {showLab && (
                     <form onSubmit={submitLab} className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-4 text-sm">

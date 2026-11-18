@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -8,6 +9,7 @@ from psycopg2.extras import RealDictCursor
 from access import visible_pond_filter
 from auth import get_current_user
 from db import get_db
+from reading_ranges import reading_range
 from water_quality import annotate_probe
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -24,7 +26,14 @@ def _clean(row) -> dict:
 
 
 @router.get("")
-def dashboard(current_user: dict = Depends(get_current_user), conn=Depends(get_db)):
+def dashboard(
+    current_user: dict = Depends(get_current_user),
+    conn=Depends(get_db),
+    range: str = "all",
+    start_date: date | None = None,
+    end_date: date | None = None,
+):
+    date_filter, date_args = reading_range(range, start_date, end_date)
     where, args = visible_pond_filter(current_user, conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
@@ -57,7 +66,7 @@ def dashboard(current_user: dict = Depends(get_current_user), conn=Depends(get_d
             ) d ON true
             LEFT JOIN LATERAL (
                 SELECT * FROM shrimp.probe_readings pr
-                WHERE pr.pond_id = p.id
+                WHERE pr.pond_id = p.id {date_filter}
                   AND pr.recorded_at <= now() + interval '5 minutes'
                 ORDER BY pr.recorded_at DESC, pr.id DESC
                 LIMIT 1
@@ -65,7 +74,7 @@ def dashboard(current_user: dict = Depends(get_current_user), conn=Depends(get_d
             WHERE p.is_active = true AND {where}
             ORDER BY p.code
             """,
-            args,
+            (*date_args, *args),
         )
         ponds = [annotate_probe(_clean(r)) for r in cur.fetchall()]
         cur.execute(

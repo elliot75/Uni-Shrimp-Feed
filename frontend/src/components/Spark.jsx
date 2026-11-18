@@ -2,13 +2,18 @@ export default function Spark({ points, field, color = '#14b8a6' }) {
     const vals = points.map((point) => ({
         time: new Date(point.recorded_at).getTime(),
         value: point[field] == null ? null : Number(point[field]),
+        segment: point[`segment_${field}`],
     })).filter((point) => Number.isFinite(point.time));
     const present = vals.filter((point) => point.value != null && Number.isFinite(point.value));
     if (present.length < 2) {
         return <div className="h-24 muted text-xs flex items-center">{present.length ? present[0].value : '—'}</div>;
     }
-    const min = Math.min(...present.map((point) => point.value));
-    const max = Math.max(...present.map((point) => point.value));
+    let min = Infinity;
+    let max = -Infinity;
+    for (const { value } of present) {
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+    }
     const span = max - min || 1;
     const firstTime = vals[0].time;
     const lastTime = vals[vals.length - 1].time;
@@ -19,6 +24,7 @@ export default function Spark({ points, field, color = '#14b8a6' }) {
     const w = 320;
     const h = 96;
     let previousTime = null;
+    let previousSegment;
     let startSegment = true;
     const d = vals.map((point) => {
         if (point.value == null || !Number.isFinite(point.value)) {
@@ -26,7 +32,12 @@ export default function Spark({ points, field, color = '#14b8a6' }) {
             previousTime = point.time;
             return '';
         }
-        if (previousTime != null && point.time - previousTime > maxGap) startSegment = true;
+        if (point.segment != null) {
+            if (previousSegment != null && point.segment !== previousSegment) startSegment = true;
+            previousSegment = point.segment;
+        } else if (previousTime != null && point.time - previousTime > maxGap) {
+            startSegment = true;
+        }
         const x = ((point.time - firstTime) / timeSpan) * w;
         const y = h - ((point.value - min) / span) * (h - 8) - 4;
         const command = `${startSegment ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;

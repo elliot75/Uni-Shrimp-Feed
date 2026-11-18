@@ -7,6 +7,7 @@ import { t } from '../i18n';
 import Spark from '../components/Spark';
 import ProbeSummary, { PROBE_METRICS } from '../components/ProbeSummary';
 import CycleManager from '../components/CycleManager';
+import ReadingRange from '../components/ReadingRange';
 import { farmDateTimeInput, farmInputToIso, formatFarmTime } from '../utils/time';
 
 const createLabForm = () => ({ sampled_at: farmDateTimeInput(), cycle_id: 'auto' });
@@ -16,7 +17,8 @@ export default function PondDetail() {
     const { user } = useAuth();
     const tr = (k) => t(user?.locale || 'vi', k);
     const [pond, setPond] = useState(null);
-    const [range, setRange] = useState('24h');
+    const [range, setRange] = useState({ range: 'all' });
+    const [readingsError, setReadingsError] = useState(false);
     const [readings, setReadings] = useState([]);
     const [labs, setLabs] = useState([]);
     const [cycles, setCycles] = useState([]);
@@ -25,20 +27,32 @@ export default function PondDetail() {
     const [labSaving, setLabSaving] = useState(false);
     const [labForm, setLabForm] = useState(createLabForm);
 
-    const load = async () => {
-        const [p, r, l, c] = await Promise.all([
-            api.get(`/ponds/${id}`),
-            api.get(`/ponds/${id}/readings`, { params: { range } }),
-            api.get(`/ponds/${id}/lab-tests`),
-            api.get(`/ponds/${id}/cycles`),
+    const load = async (signal) => {
+        const [p, l, c] = await Promise.all([
+            api.get(`/ponds/${id}`, { signal }),
+            api.get(`/ponds/${id}/lab-tests`, { signal }),
+            api.get(`/ponds/${id}/cycles`, { signal }),
         ]);
+        if (signal?.aborted) return;
         setPond(p.data);
-        setReadings(r.data);
         setLabs(l.data);
         setCycles(c.data);
     };
 
-    useEffect(() => { load(); }, [id, range]);
+    useEffect(() => {
+        const controller = new AbortController();
+        setReadings([]);
+        setReadingsError(false);
+        Promise.all([
+            api.get(`/ponds/${id}/readings`, {
+                params: { ...range, trend: true }, signal: controller.signal,
+            }),
+            load(controller.signal),
+        ])
+            .then(([{ data }]) => { if (!controller.signal.aborted) setReadings(data); })
+            .catch(() => { if (!controller.signal.aborted) setReadingsError(true); });
+        return () => controller.abort();
+    }, [id, range]);
 
     const toggleLabForm = () => {
         if (!showLab) {
@@ -94,18 +108,7 @@ export default function PondDetail() {
             <section className="card p-4">
                 <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-2">
                     <h2 className="font-medium">{tr('readings')}</h2>
-                    <div className="flex flex-wrap gap-1 text-xs">
-                        {['24h', '7d', '30d'].map((r) => (
-                            <button
-                                type="button"
-                                key={r}
-                                onClick={() => setRange(r)}
-                                className={`px-3 py-2 rounded min-h-11 ${range === r ? 'bg-teal-700 text-white' : 'bg-slate-100 dark:bg-slate-800'}`}
-                            >
-                                {tr(r === '24h' ? 'range24h' : r === '7d' ? 'range7d' : 'range30d')}
-                            </button>
-                        ))}
-                    </div>
+                    <ReadingRange value={range} onChange={setRange} tr={tr} />
                 </div>
                 <div className="mb-4">
                     <h3 className="text-sm font-medium mb-2">{tr('latest')}</h3>
@@ -129,6 +132,7 @@ export default function PondDetail() {
                         {tr('diurnalDo')}: {pond.diurnal.delta_do ?? '—'}
                     </p>
                 )}
+                {readingsError && <p role="alert" className="text-sm text-rose-600">{tr('readingsLoadFailed')}</p>}
                 <div className="grid sm:grid-cols-2 gap-4">
                     {PROBE_METRICS.map(({ field, label, unit, color }) => (
                         <div key={field}>

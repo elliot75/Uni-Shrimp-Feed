@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -20,12 +20,13 @@ from auth import get_current_user
 from db import get_db
 from lab_samples import SAMPLE_CONDITIONS_COLUMNS, SAMPLE_CONDITIONS_JOIN
 from models import CycleCreate, CycleUpdate, LabTestCreate, PondCreate, PondUpdate
+from reading_ranges import reading_range
+from reading_trends import trend_query
 from water_quality import annotate_probe, assess_nh3, diurnal_swing
 
 router = APIRouter(prefix="/api", tags=["ponds"])
 logger = logging.getLogger(__name__)
 
-RANGE_HOURS = {"24h": 24, "7d": 24 * 7, "30d": 24 * 30}
 FARM_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
@@ -277,24 +278,26 @@ def pond_readings(
     range: str = Query("24h"),
     current_user: dict = Depends(get_current_user),
     conn=Depends(get_db),
+    start_date: date | None = None,
+    end_date: date | None = None,
+    trend: bool = False,
 ):
     pond = get_pond_or_404(conn, str(pond_id))
     require_pond_access(current_user, pond, conn)
-    hours = RANGE_HOURS.get(range, 24)
-    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    date_filter, date_args = reading_range(range, start_date, end_date)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(
-            """
+        query = trend_query(date_filter) if trend else f"""
             SELECT recorded_at, ph, ph_mv, ph_temp_c, salinity_ppt, cond_temp_c,
                    conductivity_us_cm, tds_mg_l, do_mg_l, do_sat_pct, do_temp_c, temp_c
             FROM shrimp.probe_readings
-            WHERE pond_id = %s AND recorded_at >= %s
+            WHERE pond_id = %s {date_filter}
               AND recorded_at <= now() + interval '5 minutes'
-            ORDER BY recorded_at
-            """,
-            (str(pond_id), since),
-        )
+            ORDER BY recorded_at, id
+            """
+        cur.execute(query, (str(pond_id), *date_args))
         rows = cur.fetchall()
+    if trend:
+        return [_clean(r) for r in rows]
     return [annotate_probe(_clean(r)) for r in rows]
 
 
